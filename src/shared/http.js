@@ -1,5 +1,6 @@
 ﻿'use strict';
 
+const crypto = require('node:crypto');
 const zlib = require('node:zlib');
 const { acceptsEncoding } = require('./hubProtocol');
 
@@ -73,9 +74,30 @@ function requestSecret(req) {
   return String(req.headers['x-token-monitor-secret'] || '').trim();
 }
 
-function isAuthorized(req, expectedSecret) {
-  if (!expectedSecret) return true;
-  return requestSecret(req) === expectedSecret;
+// timingSafeEqual throws on length mismatch. Pad both sides to the same
+// length so a shorter candidate is still a full compare, then require the
+// original lengths to match.
+function timingSafeEqualText(actual, expected) {
+  const left = Buffer.from(String(actual ?? ''), 'utf8');
+  const right = Buffer.from(String(expected ?? ''), 'utf8');
+  const max = Math.max(left.length, right.length, 1);
+  const paddedLeft = Buffer.alloc(max);
+  const paddedRight = Buffer.alloc(max);
+  left.copy(paddedLeft);
+  right.copy(paddedRight);
+  return crypto.timingSafeEqual(paddedLeft, paddedRight) && left.length === right.length;
 }
 
-module.exports = { MAX_JSON_BODY_BYTES, isAuthorized, readJsonBody, sendJson, sendText };
+function isAuthorized(req, expectedSecret) {
+  if (!expectedSecret) return true;
+  return timingSafeEqualText(requestSecret(req), expectedSecret);
+}
+
+module.exports = {
+  MAX_JSON_BODY_BYTES,
+  isAuthorized,
+  readJsonBody,
+  sendJson,
+  sendText,
+  timingSafeEqualText
+};

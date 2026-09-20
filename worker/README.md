@@ -269,16 +269,17 @@ endpoint includes account hashes for de-duplication. When enabled,
 | POST   | `/api/ingest`              | secret | Upsert a device's usage summary            |
 | DELETE | `/api/devices/{deviceId}`  | secret | Remove a device record                     |
 
-The secret is accepted three ways (any one works):
+The secret is accepted three ways (any one works). Prefer a header; keep
+`?secret=` only as a compatibility path:
 
 1. `Authorization: Bearer <secret>` — preferred for agents, widget, and any
    server / desktop client.
 2. `x-token-monitor-secret: <secret>` — fallback for clients that cannot set
    `Authorization`.
-3. `?secret=<secret>` query string — workaround for iOS widget runtimes
+3. `?secret=<secret>` query string — compatibility path for iOS widget runtimes
    (Widgy, Scriptable) whose WKWebView struggles with CORS preflight for the
    `Authorization` header. Only use this from clients where the URL stays
-   local to the device.
+   local to the device. New clients should send a header.
 
 The secret is required. When `TOKEN_MONITOR_SECRET` is unset, every data route
 returns `503 secret_required` — only `/api/health` and the opt-in

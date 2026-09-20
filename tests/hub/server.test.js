@@ -84,6 +84,24 @@ test('a hub without a secret binds to localhost only even when asked to bind eve
   }
 });
 
+test('a configured secret is accepted from headers, not from the query string', async () => {
+  const dataFile = tempDataFile();
+  const hub = createHub({ port: 0, host: '127.0.0.1', secret: 'shh', dataFile, logger: { error() {}, warn() {} } });
+  await hub.start();
+  try {
+    const { port } = hub.server.address();
+    const base = `http://127.0.0.1:${port}/api/stats`;
+    assert.equal((await fetch(`${base}?secret=shh`)).status, 401);
+    assert.equal((await fetch(base)).status, 401);
+    assert.equal((await fetch(base, { headers: { authorization: 'Bearer shh' } })).status, 200);
+    assert.equal((await fetch(base, { headers: { 'x-token-monitor-secret': 'shh' } })).status, 200);
+    assert.equal((await fetch(base, { headers: { authorization: 'Bearer nope' } })).status, 401);
+  } finally {
+    await hub.stop();
+    fs.rmSync(dataFile, { force: true });
+  }
+});
+
 test('health exposes the Node Hub build identity without authentication', async () => {
   const dataFile = tempDataFile();
   const hub = createHub({ port: 0, host: '127.0.0.1', secret: 'shh', dataFile, logger: { error() {}, warn() {} } });

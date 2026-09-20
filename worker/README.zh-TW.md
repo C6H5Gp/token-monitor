@@ -245,11 +245,11 @@ iOS 小工具沒有省電的推送通道，所以執行環境會自行每隔幾�
 | POST   | `/api/ingest`              | 密鑰   | 更新某個裝置的用量摘要                    |
 | DELETE | `/api/devices/{deviceId}`  | 密鑰   | 刪除一筆裝置記錄                          |
 
-密鑰有三種接受方式（任一即可）：
+密鑰有三種接受方式（任一即可）。請優先使用 Header；`?secret=` 僅作為相容路徑保留：
 
 1. `Authorization: Bearer <secret>`：agent、小工具，以及任何伺服器 / 桌面客戶端首選。
 2. `x-token-monitor-secret: <secret>`：無法設定 `Authorization` 的客戶端的後備方案。
-3. `?secret=<secret>` 查詢字串：針對 iOS 小工具執行環境（Widgy、Scriptable）的變通方案，它們的 WKWebView 難以處理 `Authorization` 標頭的 CORS 預檢。只在 URL 留在裝置本機的客戶端上使用。
+3. `?secret=<secret>` 查詢字串：iOS 小工具執行環境（Widgy、Scriptable）的相容路徑，它們的 WKWebView 難以處理 `Authorization` 標頭的 CORS 預檢。只在 URL 留在裝置本機的客戶端上使用。新客戶端應改走 Header。
 
 密鑰是必需的。當 `TOKEN_MONITOR_SECRET` 未設定時，所有資料路由都回傳 `503 secret_required`，只有 `/api/health` 和可選開啟的 `/api/public/stats` 會回應。請在部署前（或部署時）設定它。
 

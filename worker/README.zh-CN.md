@@ -245,11 +245,11 @@ iOS 小部件没有省电的推送通道，所以运行时会自行每隔几分�
 | POST   | `/api/ingest`              | 密钥   | 更新某个设备的用量摘要                    |
 | DELETE | `/api/devices/{deviceId}`  | 密钥   | 删除一条设备记录                          |
 
-密钥有三种接受方式（任一即可）：
+密钥有三种接受方式（任一即可）。请优先使用 Header；`?secret=` 仅作为兼容路径保留：
 
 1. `Authorization: Bearer <secret>`：agent、小部件，以及任何服务器 / 桌面客户端首选。
 2. `x-token-monitor-secret: <secret>`：无法设置 `Authorization` 的客户端的后备方案。
-3. `?secret=<secret>` 查询字符串：针对 iOS 小部件运行时（Widgy、Scriptable）的变通方案，它们的 WKWebView 难以处理 `Authorization` 头的 CORS 预检。只在 URL 留在设备本地的客户端上使用。
+3. `?secret=<secret>` 查询字符串：iOS 小部件运行时（Widgy、Scriptable）的兼容路径，它们的 WKWebView 难以处理 `Authorization` 头的 CORS 预检。只在 URL 留在设备本地的客户端上使用。新客户端应改走 Header。
 
 密钥是必需的。当 `TOKEN_MONITOR_SECRET` 未设置时，所有数据路由都返回 `503 secret_required`，只有 `/api/health` 和可选开启的 `/api/public/stats` 会响应。请在部署前（或部署时）设置它。
 

@@ -119,3 +119,16 @@ test('returns empty string when not found or unknown client', () => {
     assert.equal(resolveSessionFile('hermes', 'whatever', home), '');
   } finally { cleanup(home); }
 });
+
+test('rejects a sessionId that would leave the session root', () => {
+  const home = tmpHome();
+  try {
+    const outside = path.join(home, 'secret.jsonl');
+    fs.writeFileSync(outside, '{}\n');
+    const escaped = 'rollout-2026-05-30T../../../../../secret';
+    assert.equal(resolveSessionFile('codex', escaped, home), '');
+    assert.equal(resolveSessionFile('codex', '../secret', home), '');
+    assert.equal(resolveSessionFile('claude', '../secret', home), '');
+    assert.equal(resolveSessionFile('claude', '..\\secret', home), '');
+  } finally { cleanup(home); }
+});

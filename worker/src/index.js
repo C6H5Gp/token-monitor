@@ -47,15 +47,34 @@ function requestSecret(request) {
   if (auth.toLowerCase().startsWith('bearer ')) return auth.slice(7).trim();
   const headerSecret = String(request.headers.get('x-token-monitor-secret') || '').trim();
   if (headerSecret) return headerSecret;
+  // Compatibility path for iOS widget runtimes that cannot set Authorization.
+  // Prefer a header; do not add this fallback to new first-party clients.
   try {
     const url = new URL(request.url);
     return String(url.searchParams.get('secret') || '').trim();
   } catch (_) { return ''; }
 }
 
+// Workers have no node:crypto.timingSafeEqual. Pad both sides to the same
+// length so a shorter candidate is still a full compare, then require the
+// original lengths to match.
+function timingSafeEqualText(actual, expected) {
+  const encoder = new TextEncoder();
+  const left = encoder.encode(String(actual ?? ''));
+  const right = encoder.encode(String(expected ?? ''));
+  const max = Math.max(left.byteLength, right.byteLength, 1);
+  const paddedLeft = new Uint8Array(max);
+  const paddedRight = new Uint8Array(max);
+  paddedLeft.set(left);
+  paddedRight.set(right);
+  let mismatch = left.byteLength === right.byteLength ? 0 : 1;
+  for (let i = 0; i < max; i += 1) mismatch |= paddedLeft[i] ^ paddedRight[i];
+  return mismatch === 0;
+}
+
 function isAuthorized(request, expectedSecret) {
   if (!expectedSecret) return true;
-  return requestSecret(request) === expectedSecret;
+  return timingSafeEqualText(requestSecret(request), expectedSecret);
 }
 
 const SUBSCRIPTIONS_KEY = 'subscriptions';
