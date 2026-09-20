@@ -60,10 +60,6 @@ function isAuthorized(request, expectedSecret) {
 
 const SUBSCRIPTIONS_KEY = 'subscriptions';
 
-function sseFormat(event, data) {
-  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-}
-
 export default {
   async fetch(request, env) {
     if (request.method === 'OPTIONS') return textResponse(204, '');
@@ -163,8 +159,17 @@ export class HubDO {
     }
   }
 
-  writeClient(client, event, data) {
-    client.writer.write(this.encoder.encode(sseFormat(event, data))).catch(() => this.dropClient(client));
+  writeEncoded(client, chunk) {
+    client.writer.write(chunk).catch(() => this.dropClient(client));
+  }
+
+  fanoutSseFrames(frames) {
+    const statsChunk = frames.stats ? this.encoder.encode(frames.stats) : null;
+    const freshnessChunk = frames.freshness ? this.encoder.encode(frames.freshness) : null;
+    for (const client of this.sseClients) {
+      const chunk = frames.unchanged && client.freshnessEvents ? freshnessChunk : statsChunk;
+      if (chunk) this.writeEncoded(client, chunk);
+    }
   }
 
   async broadcast(reason = 'update') {
@@ -172,34 +177,33 @@ export class HubDO {
     this.broadcastTimer = null;
     if (this.sseClients.size === 0) return;
     const stats = await this.statsWithSubscriptionVersion();
-    this.lastSseContentKey = hubProtocol.hubStatsContentKey(stats);
     const at = new Date().toISOString();
-    for (const client of this.sseClients) {
-      this.writeClient(client, 'stats', { type: 'stats', reason, stats, at });
-    }
+    const frames = hubProtocol.prepareSseFanout({
+      reason,
+      stats,
+      at,
+      lastContentKey: this.lastSseContentKey,
+      ...hubProtocol.sseClientKinds(this.sseClients),
+      allowFreshness: false
+    });
+    this.lastSseContentKey = frames.contentKey;
+    this.fanoutSseFrames(frames);
   }
 
   async flushBroadcast() {
     this.broadcastTimer = null;
     if (this.sseClients.size === 0) return;
     const stats = await this.statsWithSubscriptionVersion();
-    const nextContentKey = hubProtocol.hubStatsContentKey(stats);
     const at = new Date().toISOString();
-    if (!this.lastSseContentKey || nextContentKey !== this.lastSseContentKey) {
-      this.lastSseContentKey = nextContentKey;
-      for (const client of this.sseClients) {
-        this.writeClient(client, 'stats', { type: 'stats', reason: 'ingest', stats, at });
-      }
-      return;
-    }
-    const event = hubProtocol.freshnessEvent(stats, 'ingest', at);
-    for (const client of this.sseClients) {
-      if (client.freshnessEvents) {
-        this.writeClient(client, 'freshness', event);
-      } else {
-        this.writeClient(client, 'stats', { type: 'stats', reason: 'ingest', stats, at });
-      }
-    }
+    const frames = hubProtocol.prepareSseFanout({
+      reason: 'ingest',
+      stats,
+      at,
+      lastContentKey: this.lastSseContentKey,
+      ...hubProtocol.sseClientKinds(this.sseClients)
+    });
+    this.lastSseContentKey = frames.contentKey;
+    this.fanoutSseFrames(frames);
   }
 
   queueBroadcast() {
@@ -268,7 +272,7 @@ export class HubDO {
       const stats = await this.statsWithSubscriptionVersion();
       const { readable, writable } = new TransformStream();
       const writer = writable.getWriter();
-      writer.write(this.encoder.encode(sseFormat('snapshot', {
+      writer.write(this.encoder.encode(hubProtocol.encodeSseEvent('snapshot', {
         type: 'stats', reason: 'snapshot', stats, at: new Date().toISOString()
       }))).catch(() => {});
       const client = { writer, freshnessEvents: hubProtocol.wantsFreshnessEvents(request) };

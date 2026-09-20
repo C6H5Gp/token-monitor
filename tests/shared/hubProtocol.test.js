@@ -6,8 +6,11 @@ const test = require('node:test');
 const {
   acceptsEncoding,
   applyFreshnessEvent,
+  encodeSseEvent,
   freshnessEvent,
   hubStatsContentKey,
+  prepareSseFanout,
+  sseFrameForClient,
   wantsFreshnessEvents,
   wantsMinimalResponse
 } = require('../../src/shared/hubProtocol');
@@ -88,6 +91,62 @@ test('freshness events update live metadata without replacing sessions or projec
     ...original.limits,
     updatedAt: current.limits.updatedAt
   });
+});
+
+test('SSE fan-out stringifies each distinct payload once', () => {
+  const original = JSON.stringify;
+  const typed = [];
+  JSON.stringify = (value, replacer, space) => {
+    if (value && typeof value === 'object' && value.type) typed.push(value.type);
+    return original(value, replacer, space);
+  };
+  try {
+    const current = stats();
+    const frames = prepareSseFanout({
+      reason: 'ingest',
+      stats: current,
+      at: '2026-09-09T10:00:00.000Z',
+      lastContentKey: '',
+      hasFreshnessClients: true,
+      hasLegacyClients: true
+    });
+    assert.equal(typed.filter((type) => type === 'stats').length, 1);
+    assert.equal(frames.freshness, '');
+    assert.equal(frames.stats, encodeSseEvent('stats', {
+      type: 'stats', reason: 'ingest', stats: current, at: '2026-09-09T10:00:00.000Z'
+    }));
+    assert.equal(sseFrameForClient(frames, { freshnessEvents: true }), frames.stats);
+    assert.equal(sseFrameForClient(frames, { freshnessEvents: false }), frames.stats);
+
+    typed.length = 0;
+    const refreshed = stats({
+      updatedAt: '2026-09-09T10:01:00.000Z',
+      limits: { ...current.limits, updatedAt: '2026-09-09T10:01:00.000Z' },
+      devices: [{
+        ...current.devices[0],
+        updatedAt: '2026-09-09T10:01:00.000Z',
+        receivedAt: '2026-09-09T10:01:01.000Z',
+        ageMs: 50
+      }]
+    });
+    const unchanged = prepareSseFanout({
+      reason: 'ingest',
+      stats: refreshed,
+      at: '2026-09-09T10:01:02.000Z',
+      lastContentKey: frames.contentKey,
+      hasFreshnessClients: true,
+      hasLegacyClients: true
+    });
+    assert.equal(hubStatsContentKey(current), hubStatsContentKey(refreshed));
+    assert.equal(typed.filter((type) => type === 'stats').length, 1);
+    assert.equal(typed.filter((type) => type === 'freshness').length, 1);
+    assert.ok(unchanged.stats);
+    assert.ok(unchanged.freshness);
+    assert.equal(sseFrameForClient(unchanged, { freshnessEvents: true }), unchanged.freshness);
+    assert.equal(sseFrameForClient(unchanged, { freshnessEvents: false }), unchanged.stats);
+  } finally {
+    JSON.stringify = original;
+  }
 });
 
 test('Hub protocol features require explicit request headers', () => {

@@ -164,3 +164,50 @@ test('the Worker stream matches the Node Hub freshness and coalescing behavior',
     await Promise.all([modernPump, legacyPump]);
   }
 });
+
+test('Worker SSE fan-out serializes the stats payload once for every subscriber', async () => {
+  const hub = await createHub();
+  const initialAt = utcTodayAt('10:00:00.000');
+  const changedAt = utcTodayAt('10:03:00.000');
+  const base = {
+    deviceId: 'dev-a',
+    updatedAt: initialAt,
+    today: { totalTokens: 1, sessions: { a: { totalTokens: 1, lastUsedAt: initialAt } } }
+  };
+  await hub.fetch(ingestRequest(base, { 'x-token-monitor-response': 'minimal' }));
+
+  const aborts = [new AbortController(), new AbortController(), new AbortController()];
+  const events = [[], [], []];
+  const pumps = [];
+  for (let index = 0; index < 3; index += 1) {
+    const response = await hub.fetch(new Request('https://hub.example/api/stats/stream', {
+      headers: { authorization: 'Bearer shh' },
+      signal: aborts[index].signal
+    }));
+    pumps.push(collectSse(response, events[index]));
+  }
+  const original = JSON.stringify;
+  const ingestPayloads = [];
+  try {
+    await waitFor(() => events.every((list) => list.length === 1));
+    for (const list of events) list.length = 0;
+
+    JSON.stringify = (value, replacer, space) => {
+      if (value && value.type === 'stats' && value.reason === 'ingest') ingestPayloads.push(value);
+      return original(value, replacer, space);
+    };
+    await hub.fetch(ingestRequest({
+      ...base,
+      updatedAt: changedAt,
+      today: { ...base.today, totalTokens: 4 }
+    }, { 'x-token-monitor-response': 'minimal' }));
+    await waitFor(() => events.every((list) => list.length === 1));
+    assert.equal(ingestPayloads.length, 1);
+    assert.equal(events[0][0].data.stats.periods.today.totalTokens, 4);
+    assert.equal(events[2][0].data.stats.periods.today.totalTokens, 4);
+  } finally {
+    JSON.stringify = original;
+    for (const abort of aborts) abort.abort();
+    await Promise.all(pumps);
+  }
+});

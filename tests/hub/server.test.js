@@ -618,3 +618,87 @@ test('the stats stream coalesces bursts and negotiates timestamp-only freshness 
     fs.rmSync(dataFile, { force: true });
   }
 });
+
+test('SSE fan-out serializes the stats payload once for every subscriber', async () => {
+  const dataFile = tempDataFile();
+  const hub = createHub({
+    port: 0,
+    host: '127.0.0.1',
+    secret: 'shh',
+    broadcastDelayMs: 20,
+    persistDelayMs: 0,
+    dataFile,
+    logger: { error() {} }
+  });
+  await hub.start();
+  const clients = [];
+  const original = JSON.stringify;
+  const ingestPayloads = [];
+  try {
+    const initialAt = utcTodayAt('10:00:00.000');
+    const changedAt = utcTodayAt('10:03:00.000');
+    const base = {
+      deviceId: 'dev-a',
+      updatedAt: initialAt,
+      today: { totalTokens: 1, sessions: { a: { totalTokens: 1, lastUsedAt: initialAt } } }
+    };
+    hub.ingest(base);
+    const { port } = hub.server.address();
+    const streamUrl = `http://127.0.0.1:${port}/api/stats/stream`;
+    for (let index = 0; index < 3; index += 1) {
+      clients.push(await openSse(streamUrl, { authorization: 'Bearer shh' }));
+    }
+    await waitFor(() => clients.every((client) => client.events.length === 1));
+    for (const client of clients) client.events.length = 0;
+
+    JSON.stringify = (value, replacer, space) => {
+      if (value && value.type === 'stats' && value.reason === 'ingest') ingestPayloads.push(value);
+      return original(value, replacer, space);
+    };
+    hub.ingest({
+      ...base,
+      updatedAt: changedAt,
+      today: { ...base.today, totalTokens: 4 }
+    });
+    await waitFor(() => clients.every((client) => client.events.length === 1));
+    assert.equal(ingestPayloads.length, 1);
+    assert.equal(clients[0].events[0].data.stats.periods.today.totalTokens, 4);
+    assert.equal(clients[2].events[0].data.stats.periods.today.totalTokens, 4);
+  } finally {
+    JSON.stringify = original;
+    for (const client of clients) client.close();
+    await hub.stop();
+    fs.rmSync(dataFile, { force: true });
+  }
+});
+
+test('burst ingest coalesces devices.json writes and stop() flushes the tail', async () => {
+  const dataFile = tempDataFile();
+  const hub = createHub({
+    port: 0,
+    host: '127.0.0.1',
+    secret: '',
+    persistDelayMs: 80,
+    dataFile,
+    logger: { error() {} }
+  });
+  await hub.start();
+  try {
+    hub.ingest({ deviceId: 'dev-a', today: { totalTokens: 1 } });
+    const firstWrite = fs.readFileSync(dataFile, 'utf8');
+    assert.match(firstWrite, /"totalTokens": 1/);
+
+    for (let totalTokens = 2; totalTokens <= 10; totalTokens += 1) {
+      hub.ingest({ deviceId: 'dev-a', today: { totalTokens } });
+    }
+    assert.equal(fs.readFileSync(dataFile, 'utf8'), firstWrite);
+    assert.equal(hub.getStats().devices[0].periods.today.totalTokens, 10);
+
+    await hub.stop();
+    const stored = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
+    assert.equal(stored.devices['dev-a'].periods.today.totalTokens, 10);
+  } finally {
+    try { await hub.stop(); } catch (_) { /* already stopped */ }
+    fs.rmSync(dataFile, { force: true });
+  }
+});
