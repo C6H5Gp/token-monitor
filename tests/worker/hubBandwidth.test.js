@@ -211,3 +211,128 @@ test('Worker SSE fan-out serializes the stats payload once for every subscriber'
     await Promise.all(pumps);
   }
 });
+
+function spyTypedStringify() {
+  const original = JSON.stringify;
+  const typed = [];
+  JSON.stringify = (value, replacer, space) => {
+    if (value && typeof value === 'object' && value.type) {
+      typed.push({ type: value.type, reason: value.reason });
+    }
+    return original(value, replacer, space);
+  };
+  return {
+    typed,
+    restore() { JSON.stringify = original; }
+  };
+}
+
+test('Worker subscribers receive identical frames and delete/subscription writes stay full stats', async () => {
+  const hub = await createHub();
+  const initialAt = utcTodayAt('10:00:00.000');
+  const refreshedAt = utcTodayAt('10:01:00.000');
+  const base = {
+    deviceId: 'dev-a',
+    updatedAt: initialAt,
+    today: { totalTokens: 1, sessions: { a: { totalTokens: 1, lastUsedAt: initialAt } } }
+  };
+  await hub.fetch(ingestRequest(base, { 'x-token-monitor-response': 'minimal' }));
+
+  const modernAAbort = new AbortController();
+  const modernBAbort = new AbortController();
+  const legacyAbort = new AbortController();
+  const modernA = [];
+  const modernB = [];
+  const legacy = [];
+  const modernAResponse = await hub.fetch(new Request('https://hub.example/api/stats/stream', {
+    headers: { authorization: 'Bearer shh', 'x-token-monitor-stream': '2' },
+    signal: modernAAbort.signal
+  }));
+  const modernBResponse = await hub.fetch(new Request('https://hub.example/api/stats/stream', {
+    headers: { authorization: 'Bearer shh', 'x-token-monitor-stream': '2' },
+    signal: modernBAbort.signal
+  }));
+  const legacyResponse = await hub.fetch(new Request('https://hub.example/api/stats/stream', {
+    headers: { authorization: 'Bearer shh' },
+    signal: legacyAbort.signal
+  }));
+  const pumps = [
+    collectSse(modernAResponse, modernA),
+    collectSse(modernBResponse, modernB),
+    collectSse(legacyResponse, legacy)
+  ];
+  try {
+    await waitFor(() => modernA.length === 1 && modernB.length === 1 && legacy.length === 1);
+    assert.deepEqual(modernA[0].data.stats.periods, modernB[0].data.stats.periods);
+    assert.deepEqual(modernA[0].data.stats.periods, legacy[0].data.stats.periods);
+    modernA.length = 0;
+    modernB.length = 0;
+    legacy.length = 0;
+
+    await hub.fetch(ingestRequest({ ...base, updatedAt: refreshedAt }, {
+      'x-token-monitor-response': 'minimal'
+    }));
+    await waitFor(() => modernA.length === 1 && modernB.length === 1 && legacy.length === 1);
+    assert.equal(modernA[0].event, 'freshness');
+    assert.equal(modernB[0].event, 'freshness');
+    assert.deepEqual(modernA[0].data, modernB[0].data);
+    assert.equal(legacy[0].event, 'stats');
+    modernA.length = 0;
+    modernB.length = 0;
+    legacy.length = 0;
+
+    const deleteSpy = spyTypedStringify();
+    try {
+      const deleted = await hub.fetch(new Request('https://hub.example/api/devices/dev-a', {
+        method: 'DELETE',
+        headers: { authorization: 'Bearer shh' }
+      }));
+      assert.equal(deleted.status, 200);
+      await waitFor(() => modernA.length === 1 && modernB.length === 1 && legacy.length === 1);
+      assert.deepEqual(deleteSpy.typed.filter((entry) => entry.reason === 'delete'), [
+        { type: 'stats', reason: 'delete' }
+      ]);
+    } finally {
+      deleteSpy.restore();
+    }
+    assert.equal(modernA[0].event, 'stats');
+    assert.equal(legacy[0].event, 'stats');
+    assert.equal(modernA[0].data.reason, 'delete');
+    assert.deepEqual(modernA[0].data.stats.devices, []);
+    assert.deepEqual(modernA[0].data, modernB[0].data);
+    modernA.length = 0;
+    modernB.length = 0;
+    legacy.length = 0;
+
+    const record = {
+      id: 'sub_1', provider: 'codex', planName: 'Plus',
+      amountMinor: 9000, currency: 'HKD', startDate: '2026-05-31'
+    };
+    const subSpy = spyTypedStringify();
+    let written;
+    try {
+      written = await (await hub.fetch(new Request('https://hub.example/api/subscriptions', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer shh' },
+        body: JSON.stringify({ subscriptions: [record], baseUpdatedAt: '' })
+      }))).json();
+      await waitFor(() => modernA.length === 1 && modernB.length === 1 && legacy.length === 1);
+      assert.deepEqual(subSpy.typed.filter((entry) => entry.reason === 'subscriptions'), [
+        { type: 'stats', reason: 'subscriptions' }
+      ]);
+    } finally {
+      subSpy.restore();
+    }
+    assert.equal(modernA[0].event, 'stats');
+    assert.equal(legacy[0].event, 'stats');
+    assert.equal(modernA[0].data.reason, 'subscriptions');
+    assert.equal(modernA[0].data.stats.subscriptionsUpdatedAt, written.updatedAt);
+    assert.equal('subscriptions' in modernA[0].data.stats, false);
+    assert.deepEqual(modernA[0].data, modernB[0].data);
+  } finally {
+    modernAAbort.abort();
+    modernBAbort.abort();
+    legacyAbort.abort();
+    await Promise.all(pumps);
+  }
+});

@@ -10,10 +10,39 @@ const {
   freshnessEvent,
   hubStatsContentKey,
   prepareSseFanout,
+  sseClientKinds,
   sseFrameForClient,
   wantsFreshnessEvents,
   wantsMinimalResponse
 } = require('../../src/shared/hubProtocol');
+
+function spyTypedStringify() {
+  const original = JSON.stringify;
+  const typed = [];
+  JSON.stringify = (value, replacer, space) => {
+    if (value && typeof value === 'object' && value.type) {
+      typed.push({ type: value.type, reason: value.reason });
+    }
+    return original(value, replacer, space);
+  };
+  return {
+    typed,
+    restore() { JSON.stringify = original; }
+  };
+}
+
+function refreshedStats(current) {
+  return stats({
+    updatedAt: '2026-09-09T10:01:00.000Z',
+    limits: { ...current.limits, updatedAt: '2026-09-09T10:01:00.000Z' },
+    devices: [{
+      ...current.devices[0],
+      updatedAt: '2026-09-09T10:01:00.000Z',
+      receivedAt: '2026-09-09T10:01:01.000Z',
+      ageMs: 50
+    }]
+  });
+}
 
 function stats(overrides = {}) {
   return {
@@ -94,12 +123,7 @@ test('freshness events update live metadata without replacing sessions or projec
 });
 
 test('SSE fan-out stringifies each distinct payload once', () => {
-  const original = JSON.stringify;
-  const typed = [];
-  JSON.stringify = (value, replacer, space) => {
-    if (value && typeof value === 'object' && value.type) typed.push(value.type);
-    return original(value, replacer, space);
-  };
+  const spy = spyTypedStringify();
   try {
     const current = stats();
     const frames = prepareSseFanout({
@@ -110,25 +134,17 @@ test('SSE fan-out stringifies each distinct payload once', () => {
       hasFreshnessClients: true,
       hasLegacyClients: true
     });
-    assert.equal(typed.filter((type) => type === 'stats').length, 1);
+    assert.deepEqual(spy.typed, [{ type: 'stats', reason: 'ingest' }]);
     assert.equal(frames.freshness, '');
+    assert.equal(frames.unchanged, false);
     assert.equal(frames.stats, encodeSseEvent('stats', {
       type: 'stats', reason: 'ingest', stats: current, at: '2026-09-09T10:00:00.000Z'
     }));
     assert.equal(sseFrameForClient(frames, { freshnessEvents: true }), frames.stats);
     assert.equal(sseFrameForClient(frames, { freshnessEvents: false }), frames.stats);
 
-    typed.length = 0;
-    const refreshed = stats({
-      updatedAt: '2026-09-09T10:01:00.000Z',
-      limits: { ...current.limits, updatedAt: '2026-09-09T10:01:00.000Z' },
-      devices: [{
-        ...current.devices[0],
-        updatedAt: '2026-09-09T10:01:00.000Z',
-        receivedAt: '2026-09-09T10:01:01.000Z',
-        ageMs: 50
-      }]
-    });
+    spy.typed.length = 0;
+    const refreshed = refreshedStats(current);
     const unchanged = prepareSseFanout({
       reason: 'ingest',
       stats: refreshed,
@@ -138,15 +154,119 @@ test('SSE fan-out stringifies each distinct payload once', () => {
       hasLegacyClients: true
     });
     assert.equal(hubStatsContentKey(current), hubStatsContentKey(refreshed));
-    assert.equal(typed.filter((type) => type === 'stats').length, 1);
-    assert.equal(typed.filter((type) => type === 'freshness').length, 1);
+    assert.deepEqual(spy.typed, [
+      { type: 'stats', reason: 'ingest' },
+      { type: 'freshness', reason: 'ingest' }
+    ]);
+    assert.equal(unchanged.unchanged, true);
     assert.ok(unchanged.stats);
     assert.ok(unchanged.freshness);
     assert.equal(sseFrameForClient(unchanged, { freshnessEvents: true }), unchanged.freshness);
     assert.equal(sseFrameForClient(unchanged, { freshnessEvents: false }), unchanged.stats);
   } finally {
-    JSON.stringify = original;
+    spy.restore();
   }
+});
+
+test('unchanged content-key can omit the frame a subscriber kind does not need', () => {
+  const current = stats();
+  const lastContentKey = hubStatsContentKey(current);
+  const refreshed = refreshedStats(current);
+
+  const spy = spyTypedStringify();
+  try {
+    const freshnessOnly = prepareSseFanout({
+      reason: 'ingest',
+      stats: refreshed,
+      at: '2026-09-09T10:01:02.000Z',
+      lastContentKey,
+      hasFreshnessClients: true,
+      hasLegacyClients: false
+    });
+    assert.equal(freshnessOnly.stats, '');
+    assert.match(freshnessOnly.freshness, /^event: freshness\n/);
+    assert.deepEqual(spy.typed, [{ type: 'freshness', reason: 'ingest' }]);
+
+    spy.typed.length = 0;
+    const legacyOnly = prepareSseFanout({
+      reason: 'ingest',
+      stats: refreshed,
+      at: '2026-09-09T10:01:02.000Z',
+      lastContentKey,
+      hasFreshnessClients: false,
+      hasLegacyClients: true
+    });
+    assert.match(legacyOnly.stats, /^event: stats\n/);
+    assert.equal(legacyOnly.freshness, '');
+    assert.deepEqual(spy.typed, [{ type: 'stats', reason: 'ingest' }]);
+
+    spy.typed.length = 0;
+    const nobody = prepareSseFanout({
+      reason: 'ingest',
+      stats: refreshed,
+      at: '2026-09-09T10:01:02.000Z',
+      lastContentKey,
+      hasFreshnessClients: false,
+      hasLegacyClients: false
+    });
+    assert.equal(nobody.stats, '');
+    assert.equal(nobody.freshness, '');
+    assert.deepEqual(spy.typed, []);
+  } finally {
+    spy.restore();
+  }
+});
+
+test('subscriptions and deletes force a full stats frame even when content is unchanged', () => {
+  const current = stats();
+  const lastContentKey = hubStatsContentKey(current);
+  const refreshed = refreshedStats(current);
+
+  for (const reason of ['subscriptions', 'delete']) {
+    const spy = spyTypedStringify();
+    try {
+      const frames = prepareSseFanout({
+        reason,
+        stats: refreshed,
+        at: '2026-09-09T10:01:02.000Z',
+        lastContentKey,
+        hasFreshnessClients: true,
+        hasLegacyClients: true,
+        allowFreshness: false
+      });
+      assert.equal(frames.unchanged, false);
+      assert.equal(frames.freshness, '');
+      assert.match(frames.stats, new RegExp(`"reason":"${reason}"`));
+      assert.deepEqual(spy.typed, [{ type: 'stats', reason }]);
+      assert.equal(sseFrameForClient(frames, { freshnessEvents: true }), frames.stats);
+      assert.equal(sseFrameForClient(frames, { freshnessEvents: false }), frames.stats);
+    } finally {
+      spy.restore();
+    }
+  }
+});
+
+test('sseClientKinds classifies mixed, modern-only, and legacy-only subscribers', () => {
+  assert.deepEqual(sseClientKinds([]), { hasFreshnessClients: false, hasLegacyClients: false });
+  assert.deepEqual(sseClientKinds([{ freshnessEvents: true }]), {
+    hasFreshnessClients: true,
+    hasLegacyClients: false
+  });
+  assert.deepEqual(sseClientKinds([{}]), {
+    hasFreshnessClients: false,
+    hasLegacyClients: true
+  });
+  assert.deepEqual(sseClientKinds([
+    { freshnessEvents: true },
+    { freshnessEvents: false },
+    { freshnessEvents: true }
+  ]), { hasFreshnessClients: true, hasLegacyClients: true });
+});
+
+test('sseFrameForClient falls back to an empty string when the chosen frame is missing', () => {
+  assert.equal(sseFrameForClient({ unchanged: true, freshness: '', stats: '' }, { freshnessEvents: true }), '');
+  assert.equal(sseFrameForClient({ unchanged: false, stats: '' }, { freshnessEvents: false }), '');
+  assert.equal(sseFrameForClient(null, { freshnessEvents: true }), '');
 });
 
 test('Hub protocol features require explicit request headers', () => {
