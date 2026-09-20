@@ -2650,28 +2650,41 @@ test('collector exposes no watch-cooldown knob (settings cadence stays debounce-
   // cannot re-arm at 100% occupancy (scan 5s, wait 1.5s, repeat).
   const collector = freshCollector();
   assert.equal(collector.watchDelayMs, undefined);
+  assert.equal(collector.watchCooldownMs, undefined);
   assert.equal(collector.LIVE_TICK_MAX_DUTY_CYCLE, 0.5);
   assert.equal(collector.liveWatchDelayMs(8, 10, 0), 10);
+  assert.equal(collector.liveWatchDelayMs(10, 10, 0), 10);
   assert.equal(collector.liveWatchDelayMs(80, 10, 0), 80);
   assert.equal(collector.liveWatchDelayMs(80, 10, 80), 10);
   assert.equal(collector.liveTickMinIdleMs(80, 10), 80);
+  assert.equal(collector.liveTickMinIdleMs(10, 10), 10);
   assert.equal(collector.liveTickMinIdleMs(8, 10), 10);
 });
 
 test('live watch delay stays on debounce until the last tick outlasts it', () => {
   const { liveTickMinIdleMs, liveWatchDelayMs, LIVE_TICK_MAX_DUTY_CYCLE } = freshCollector();
   assert.equal(LIVE_TICK_MAX_DUTY_CYCLE, 0.5);
+  assert.equal(liveTickMinIdleMs(undefined, 1500), 1500);
   assert.equal(liveTickMinIdleMs(null, 1500), 1500);
   assert.equal(liveTickMinIdleMs(0, 1500), 1500);
+  assert.equal(liveTickMinIdleMs(-1, 1500), 1500);
   assert.equal(liveTickMinIdleMs(Number.NaN, 1500), 1500);
+  assert.equal(liveTickMinIdleMs(Infinity, 1500), 1500);
+  assert.equal(liveTickMinIdleMs(1499, 1500), 1500);
+  assert.equal(liveTickMinIdleMs(1500, 1500), 1500);
+  assert.equal(liveTickMinIdleMs(1501, 1500), 1501);
   assert.equal(liveTickMinIdleMs(400, 1500), 1500);
   assert.equal(liveTickMinIdleMs(5000, 1500), 5000);
   // Event path: debounce always applies; leftover duty idle only lengthens it.
   assert.equal(liveWatchDelayMs(400, 1500, 0), 1500);
+  assert.equal(liveWatchDelayMs(1500, 1500, 0), 1500);
   assert.equal(liveWatchDelayMs(5000, 1500, 0), 5000);
   assert.equal(liveWatchDelayMs(5000, 1500, 100), 4900);
+  assert.equal(liveWatchDelayMs(5000, 1500, 3499), 1501);
+  assert.equal(liveWatchDelayMs(5000, 1500, 3500), 1500);
   assert.equal(liveWatchDelayMs(5000, 1500, 6000), 1500);
   assert.equal(liveWatchDelayMs(5000, 1500, Infinity), 1500);
+  assert.equal(liveWatchDelayMs(5000, 1500, -1), 1500);
 });
 
 function waitForCondition(predicate, timeoutMs = 2000) {
@@ -2851,6 +2864,88 @@ test('a watch tick slower than debounce waits a duty-cycle idle before the next 
       idleGapMs < slowDurationMs + 80,
       `duty-cycle wait should not overshoot the last tick, idle gap was ${idleGapMs}ms`
     );
+  } finally {
+    if (handle) handle.stop();
+    childProcess.spawn = originalSpawn;
+    chokidar.watch = originalWatch;
+    os.homedir = originalHomedir;
+    if (originalSharedDir === undefined) delete process.env.TOKEN_MONITOR_SHARED_DIR;
+    else process.env.TOKEN_MONITOR_SHARED_DIR = originalSharedDir;
+    delete require.cache[collectorPath];
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('a fast watch tick stays on debounce and does not inherit a settings cooldown', async () => {
+  const tmp = withTmpHome([path.join('.claude', 'projects')]);
+  const originalHomedir = os.homedir;
+  os.homedir = () => tmp;
+  const originalSharedDir = process.env.TOKEN_MONITOR_SHARED_DIR;
+  process.env.TOKEN_MONITOR_SHARED_DIR = tmp;
+
+  const chokidar = require('chokidar');
+  const originalWatch = chokidar.watch;
+  let watchHandler = null;
+  chokidar.watch = () => ({
+    on: (event, handler) => { if (event === 'all') watchHandler = handler; },
+    close: () => {}
+  });
+
+  const childProcess = require('node:child_process');
+  const originalSpawn = childProcess.spawn;
+  const calls = [];
+  childProcess.spawn = (_bin, args) => {
+    calls.push({ args, at: performance.now() });
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end: () => {} };
+    child.kill = () => {};
+    setImmediate(() => {
+      child.stdout.emit('data', Buffer.from(JSON.stringify({ entries: [] })));
+      child.emit('close', 0);
+    });
+    return child;
+  };
+
+  let handle = null;
+  try {
+    const { startCollector } = freshCollector();
+    const updates = [];
+    handle = startCollector({
+      clients: 'claude',
+      allTimeSince: '2024-01-01',
+      commandTimeoutMs: 5000,
+      deviceId: 'test-device',
+      agentVersion: 'test',
+      intervalMs: 60 * 60 * 1000,
+      watchEnabled: true,
+      watchDebounceMs: 40,
+      limitsEnabled: false,
+      historyEnabled: false,
+      onUpdate: (_summary, reason) => updates.push(reason)
+    });
+
+    await waitForCondition(() => updates.length === 1);
+    assert.ok(watchHandler, 'watcher handler captured');
+    assert.equal(handle.watchCooldownMs, undefined);
+
+    watchHandler('change', '/fake/session.jsonl');
+    await waitForCondition(() => updates.length === 2);
+    const fastDurationMs = handle.getDiagnostics().lastTickDurationMs;
+    assert.ok(fastDurationMs < 40, `fast tick should stay under debounce, got ${fastDurationMs}ms`);
+
+    const callsBefore = calls.length;
+    const armedAt = performance.now();
+    watchHandler('change', '/fake/session.jsonl');
+    await waitForCondition(() => calls.length > callsBefore);
+    const idleGapMs = calls[callsBefore].at - armedAt;
+    assert.ok(idleGapMs >= 25, `fast ticks must still honour debounce, idle gap was ${idleGapMs}ms`);
+    assert.ok(
+      idleGapMs < 90,
+      `fast ticks must not grow a hidden cooldown, idle gap was ${idleGapMs}ms after a ${fastDurationMs}ms tick`
+    );
+    assert.ok(!updates.includes('coalesced'));
   } finally {
     if (handle) handle.stop();
     childProcess.spawn = originalSpawn;
