@@ -253,8 +253,10 @@ test('collector module and handle expose no watch-cooldown setting', async () =>
 test('AGENTS.md and collector comments keep the no-settings-cooldown contract', () => {
   const agents = fs.readFileSync(path.join(__dirname, '../../AGENTS.md'), 'utf8');
   assert.match(agents, /no settings cooldown/);
-  assert.match(agents, /liveWatchDelayMs\(\)/);
+  assert.match(agents, /remainingDutyIdleMs\(\)/);
+  assert.match(agents, /armWatchTick\(\)/);
   assert.match(agents, /50% duty cycle/);
+  assert.doesNotMatch(agents, /liveWatchDelayMs\(\)/);
   assert.doesNotMatch(agents, /There is deliberately \*\*no cooldown\*\*/);
 
   const source = fs.readFileSync(collectorPath, 'utf8');
