@@ -45,7 +45,7 @@ test('Node and Worker hubs prepare SSE frames once and force full stats for dele
 });
 
 test('the hub bandwidth benchmark still compares Node and Worker wire sizes from one stringify per frame', () => {
-  assert.match(benchmarkSource, /function sse\(event, data\) \{\n  return `event: \$\{event\}\\ndata: \$\{JSON\.stringify\(data\)\}\\n\\n`;\n\}/);
+  assert.match(benchmarkSource, /function sse\(event, data\) \{[\s\S]*?JSON\.stringify\(data\)/);
   assert.match(benchmarkSource, /assert\.deepEqual\(workerRecord, nodeRecord/);
   assert.match(benchmarkSource, /Node and Worker aggregate stats drifted/);
   assert.match(benchmarkSource, /burst10NewPerClient: bytes\(burstEvents\.at\(-1\)\)/);

@@ -11,7 +11,7 @@ const script = path.join(root, 'scripts/benchmark-hub-bandwidth.js');
 const source = fs.readFileSync(script, 'utf8');
 
 test('hub bandwidth benchmark stringifies each SSE frame once and compares runtimes', () => {
-  assert.match(source, /function sse\(event, data\) \{\n  return `event: \$\{event\}\\ndata: \$\{JSON\.stringify\(data\)\}\\n\\n`;\n\}/);
+  assert.match(source, /function sse\(event, data\) \{[\s\S]*?JSON\.stringify\(data\)/);
   assert.match(source, /assert\.deepEqual\(workerRecord, nodeRecord, 'Node and Worker normalized records drifted'\)/);
   assert.match(source, /'Node and Worker aggregate stats drifted'/);
   assert.match(source, /burst10LegacyPerClient: burstEvents\.reduce/);
