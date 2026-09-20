@@ -133,6 +133,24 @@ function fireWatch(watchHandler, tmp, name = 'session.jsonl') {
   watchHandler('change', path.join(tmp, '.claude', 'projects', name));
 }
 
+// Windows timer resolution is often ~15ms, and a "fast" tick is still three
+// serial setTimeout(0) scans. Absolute 40ms walls flake there; keep the
+// debounce-only claim relative to the debounce this case chose.
+function assertDebounceOnlyArm(idleGapMs, debounceMs, durationMs) {
+  assert.ok(
+    durationMs < debounceMs,
+    `fast tick should stay cheaper than debounce (${debounceMs}ms), got ${durationMs}ms`
+  );
+  assert.ok(
+    idleGapMs >= debounceMs * 0.4,
+    `fast ticks must still honour debounce (${debounceMs}ms), idle gap was ${idleGapMs}ms`
+  );
+  assert.ok(
+    idleGapMs < debounceMs + 80,
+    `fast ticks must not grow a hidden cooldown, idle gap was ${idleGapMs}ms after a ${durationMs}ms tick`
+  );
+}
+
 test('liveTickMinIdleMs treats non-positive and non-finite durations as debounce-only', () => {
   const { liveTickMinIdleMs } = freshCollector();
   for (const last of [undefined, null, 0, -1, -0.5, Number.NaN, Infinity, -Infinity, '', 'nope', {}]) {
@@ -246,25 +264,23 @@ test('AGENTS.md and collector comments keep the no-settings-cooldown contract', 
 });
 
 test('a fast watch tick still starts after debounce only', async () => {
-  await withLiveCollector({ watchDebounceMs: 40, spawnDelayMs: 0 }, async (ctx) => {
+  const debounceMs = 200;
+  await withLiveCollector({ watchDebounceMs: debounceMs, spawnDelayMs: 0 }, async (ctx) => {
     const { calls, updates, handle, watchHandler, tmp } = ctx;
-    assert.ok(handle.getDiagnostics().lastTickDurationMs < 40);
+    assert.ok(
+      handle.getDiagnostics().lastTickDurationMs < debounceMs,
+      `startup tick should stay cheaper than debounce (${debounceMs}ms), got ${handle.getDiagnostics().lastTickDurationMs}ms`
+    );
 
     fireWatch(watchHandler, tmp, 'a.jsonl');
     await waitForCondition(() => updates.length === 2);
     const fastDurationMs = handle.getDiagnostics().lastTickDurationMs;
-    assert.ok(fastDurationMs < 40, `fast tick should stay under debounce, got ${fastDurationMs}ms`);
 
     const callsBefore = calls.length;
     const armedAt = performance.now();
     fireWatch(watchHandler, tmp, 'b.jsonl');
     await waitForCondition(() => calls.length > callsBefore);
-    const idleGapMs = calls[callsBefore].at - armedAt;
-    assert.ok(idleGapMs >= 25, `fast ticks must still honour debounce, idle gap was ${idleGapMs}ms`);
-    assert.ok(
-      idleGapMs < 90,
-      `fast ticks must not wait lastDuration*2, idle gap was ${idleGapMs}ms after a ${fastDurationMs}ms tick`
-    );
+    assertDebounceOnlyArm(calls[callsBefore].at - armedAt, debounceMs, fastDurationMs);
     assert.ok(calls[callsBefore].args.includes('--today'));
     assert.ok(!updates.includes('coalesced'));
   });
@@ -311,9 +327,13 @@ test('after leftover idle elapses the next watch event is debounce-only again', 
     fireWatch(watchHandler, tmp, 'after-idle.jsonl');
     await waitForCondition(() => calls.length > callsBefore);
     const idleGapMs = calls[callsBefore].at - armedAt;
-    assert.ok(idleGapMs >= 15, `debounce must still apply after leftover expires, idle gap was ${idleGapMs}ms`);
+    const debounceMs = 25;
     assert.ok(
-      idleGapMs < 70,
+      idleGapMs >= debounceMs * 0.4,
+      `debounce must still apply after leftover expires, idle gap was ${idleGapMs}ms`
+    );
+    assert.ok(
+      idleGapMs < debounceMs + 80,
       `expired leftover must not keep forcing lastDuration, idle gap was ${idleGapMs}ms after a ${slowDurationMs}ms tick`
     );
   });

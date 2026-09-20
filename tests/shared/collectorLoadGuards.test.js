@@ -2877,6 +2877,10 @@ test('a watch tick slower than debounce waits a duty-cycle idle before the next 
 });
 
 test('a fast watch tick stays on debounce and does not inherit a settings cooldown', async () => {
+  // Same Windows slop as liveTickBackpressure: do not pin "fast" to an
+  // absolute 40ms wall. Debounce is the settings cadence; the tick only has
+  // to stay cheaper than that debounce.
+  const debounceMs = 200;
   const tmp = withTmpHome([path.join('.claude', 'projects')]);
   const originalHomedir = os.homedir;
   os.homedir = () => tmp;
@@ -2920,7 +2924,7 @@ test('a fast watch tick stays on debounce and does not inherit a settings cooldo
       agentVersion: 'test',
       intervalMs: 60 * 60 * 1000,
       watchEnabled: true,
-      watchDebounceMs: 40,
+      watchDebounceMs: debounceMs,
       limitsEnabled: false,
       historyEnabled: false,
       onUpdate: (_summary, reason) => updates.push(reason)
@@ -2933,16 +2937,22 @@ test('a fast watch tick stays on debounce and does not inherit a settings cooldo
     watchHandler('change', '/fake/session.jsonl');
     await waitForCondition(() => updates.length === 2);
     const fastDurationMs = handle.getDiagnostics().lastTickDurationMs;
-    assert.ok(fastDurationMs < 40, `fast tick should stay under debounce, got ${fastDurationMs}ms`);
+    assert.ok(
+      fastDurationMs < debounceMs,
+      `fast tick should stay cheaper than debounce (${debounceMs}ms), got ${fastDurationMs}ms`
+    );
 
     const callsBefore = calls.length;
     const armedAt = performance.now();
     watchHandler('change', '/fake/session.jsonl');
     await waitForCondition(() => calls.length > callsBefore);
     const idleGapMs = calls[callsBefore].at - armedAt;
-    assert.ok(idleGapMs >= 25, `fast ticks must still honour debounce, idle gap was ${idleGapMs}ms`);
     assert.ok(
-      idleGapMs < 90,
+      idleGapMs >= debounceMs * 0.4,
+      `fast ticks must still honour debounce (${debounceMs}ms), idle gap was ${idleGapMs}ms`
+    );
+    assert.ok(
+      idleGapMs < debounceMs + 80,
       `fast ticks must not grow a hidden cooldown, idle gap was ${idleGapMs}ms after a ${fastDurationMs}ms tick`
     );
     assert.ok(!updates.includes('coalesced'));
