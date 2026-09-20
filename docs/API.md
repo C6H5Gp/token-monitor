@@ -18,7 +18,7 @@ or:
 X-Token-Monitor-Secret: <secret>
 ```
 
-The Node hub is header-only. The Cloudflare Worker still accepts `?secret=` as a compatibility path for iOS widget runtimes that cannot set `Authorization`; new clients should not put the secret in the URL.
+The Node hub is header-only. The Cloudflare Worker still accepts `?secret=` as a limited compatibility / migration path for iOS widget runtimes that cannot set `Authorization`. A secret in the URL can appear in proxy, platform, and history logs; new clients should send a header.
 
 ## `GET /api/health`
 
