@@ -49,6 +49,11 @@ test('Worker prefers header auth and keeps query secret as a compatibility path'
   const wrongQuery = await hub.fetch(new Request('https://hub.example/api/stats?secret=nope'));
   assert.equal(wrongQuery.status, 401);
 
+  const wrongLength = await hub.fetch(new Request('https://hub.example/api/stats', {
+    headers: { authorization: 'Bearer sh' }
+  }));
+  assert.equal(wrongLength.status, 401);
+
   // A present Authorization header wins even when the query still carries the secret.
   const headerWins = await hub.fetch(new Request('https://hub.example/api/stats?secret=shh', {
     headers: { authorization: 'Bearer nope' }

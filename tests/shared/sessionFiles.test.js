@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { resolveSessionFile } = require('../../src/shared/sessionFiles');
+const { isSafeSessionId, resolveSessionFile } = require('../../src/shared/sessionFiles');
 
 function tmpHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'tm-home-'));
@@ -118,6 +118,17 @@ test('returns empty string when not found or unknown client', () => {
     assert.equal(resolveSessionFile('claude', 'missing', home), '');
     assert.equal(resolveSessionFile('hermes', 'whatever', home), '');
   } finally { cleanup(home); }
+});
+
+test('isSafeSessionId allows a single segment and rejects empty or parent refs', () => {
+  assert.equal(isSafeSessionId('abc-123'), true);
+  assert.equal(isSafeSessionId('rollout-2026-05-30T11-44-50-019e76fc-0d58'), true);
+  assert.equal(isSafeSessionId(''), false);
+  assert.equal(isSafeSessionId('.'), false);
+  assert.equal(isSafeSessionId('..'), false);
+  assert.equal(isSafeSessionId('../secret'), false);
+  assert.equal(isSafeSessionId('foo/bar'), false);
+  assert.equal(isSafeSessionId('foo\\bar'), false);
 });
 
 test('rejects a sessionId that would leave the session root', () => {

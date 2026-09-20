@@ -1,9 +1,17 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 
 const { isAuthorized, timingSafeEqualText } = require('../../src/shared/http');
+
+test('hub secret compare uses crypto.timingSafeEqual with a length-safe pad', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../../src/shared/http.js'), 'utf8');
+  assert.match(source, /crypto\.timingSafeEqual/);
+  assert.doesNotMatch(source, /return requestSecret\(req\) === expectedSecret/);
+});
 
 test('timingSafeEqualText matches equal strings and rejects mismatches', () => {
   assert.equal(timingSafeEqualText('shh', 'shh'), true);
