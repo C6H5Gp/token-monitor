@@ -164,10 +164,13 @@ export class HubDO {
   }
 
   fanoutSseFrames(frames) {
-    const statsChunk = frames.stats ? this.encoder.encode(frames.stats) : null;
-    const freshnessChunk = frames.freshness ? this.encoder.encode(frames.freshness) : null;
+    // 选帧复用 sseFrameForClient，与 Node 对齐，避免 Worker 另写一套规则；同一帧只 encode 一次。
+    const chunks = new Map();
+    for (const frame of [frames.stats, frames.freshness]) {
+      if (frame) chunks.set(frame, this.encoder.encode(frame));
+    }
     for (const client of this.sseClients) {
-      const chunk = frames.unchanged && client.freshnessEvents ? freshnessChunk : statsChunk;
+      const chunk = chunks.get(hubProtocol.sseFrameForClient(frames, client));
       if (chunk) this.writeEncoded(client, chunk);
     }
   }

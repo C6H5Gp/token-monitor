@@ -32,9 +32,11 @@ test('Node and Worker hubs prepare SSE frames once and force full stats for dele
   assert.match(workerProtocolSource, /function prepareSseFanout/);
 
   assert.match(nodeHubSource, /prepareSseFanout\(/);
+  assert.match(nodeHubSource, /sseFrameForClient\(/);
   assert.match(nodeHubSource, /allowFreshness: false/);
   assert.match(nodeHubSource, /encodeSseEvent\('snapshot'/);
   assert.match(workerHubSource, /hubProtocol\.prepareSseFanout\(/);
+  assert.match(workerHubSource, /hubProtocol\.sseFrameForClient\(/);
   assert.match(workerHubSource, /allowFreshness: false/);
   assert.match(workerHubSource, /hubProtocol\.encodeSseEvent\('snapshot'/);
 
