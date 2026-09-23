@@ -28,7 +28,9 @@ const subscriptionDisplayApi = window.TokenMonitorSubscriptionDisplay;
 const subscriptionTextApi = window.TokenMonitorSubscriptionText;
 const { limitFillPercent, limitModeSuffix } = window.TokenMonitorLimitDisplayMode;
 const codexAccountControlApi = window.TokenMonitorCodexAccountControl;
-const { clientColors } = window.TokenMonitorUsageCharts;
+const { activateOnPress } = window.TokenMonitorPressActivation;
+const { clientColors, modelColor, modelVendorFor } = window.TokenMonitorUsageCharts;
+const { UNATTRIBUTED_KEY } = window.TokenMonitorUsageAttributionRows;
 const { LIMIT_PROVIDER_LABELS } = window.TokenMonitorLimitProviders;
 const { CLIENT_LABELS } = window.TokenMonitorClientCatalog;
 // The same predicate the Sessions list uses. The card repaints from its last
@@ -46,6 +48,10 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const RING_RADIUS = 19;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 const DRAG_THRESHOLD_PX = 4;
+const BREAKDOWN_VISIBLE_ROWS = 6;
+// The period of `edge-dock-mark-breathe` in dock.css, which the running halo's phase
+// is taken modulo (see ringNode). A test holds the two numbers together.
+const BREATH_MS = 2600;
 
 const root = document.getElementById('edgeDockRoot');
 const query = new URLSearchParams(window.location.search);
@@ -55,7 +61,8 @@ const reducedMotionMedia = window.matchMedia?.('(prefers-reduced-motion: reduce)
 const state = {
   payload: null,
   locale: 'en',
-  appearanceKey: ''
+  appearanceKey: '',
+  breakdownMode: 'tools'
 };
 const maskSupport = new Map();
 
@@ -412,6 +419,11 @@ function renderPeek(payload) {
   root.dataset.side = payload.side;
   root.title = t('settings.display.edgeDock');
   if (!contentLayer.firstChild) contentLayer.append(el('span', 'edge-dock-grip'));
+  // The handle's exit is a move, not a blink, so the withdrawn pose is held as a
+  // class and one transition carries it both ways (see the grip's rules). The class
+  // goes on in the same frame the grip is built, which is what keeps a page that
+  // loads with the rail already open from animating into a pose it starts in.
+  root.classList.toggle('is-handle-hidden', payload.peeking !== true);
 }
 
 if (surface === 'peek') root.addEventListener('click', () => bridge.click(null));
@@ -444,13 +456,40 @@ function ringNode(remainingPercent, color, mark) {
   fill.setAttribute('stroke-dashoffset', String(RING_CIRCUMFERENCE * (1 - remaining / 100)));
   if (remainingPercent === null) fill.style.opacity = '0';
   svg.append(track, fill);
-  ring.append(svg, mark);
+  // The halo the running state breathes (see dock.css). It is always emitted and
+  // transparent until the cell is marked running, so what decides whether it shows is
+  // the cell's state alone. What it cannot carry is its own phase: renderRail rebuilds
+  // every cell from the payload on every push, so a fresh node restarts the breath at
+  // 0% each time - and the pushes are closest together exactly while a session is
+  // working, which is when this mark is worth anything. Anchoring the phase to the
+  // clock instead puts it somewhere a rebuild cannot reach, and the swap between the
+  // two nodes is invisible because they are at the same point of the same cycle.
+  const glow = el('span', 'edge-dock-ring-glow');
+  glow.style.animationDelay = `-${Date.now() % BREATH_MS}ms`;
+  ring.append(svg, glow, mark);
   return ring;
 }
 
 function providerCellNode(cell) {
   const node = el('div', 'edge-dock-cell');
   node.dataset.status = cell.status;
+  // Work in flight for this provider's tools, asked of the rows at paint time for
+  // the same reason the sessions cell asks: running expires on a clock, so a count
+  // frozen into the payload would keep the mark breathing after the work stopped.
+  // The glow rides the mark rather than the ring's arc on purpose. A running
+  // session is not proof that this quota is what is draining - the tokens may be
+  // billed to an API key or another endpoint entirely, which is the same reason
+  // local usage is not an adaptive-polling trigger - so it is a fact about the
+  // tool, not about the arc. Keeping it off the arc also keeps the signal's
+  // strength independent of how much quota is left (an arc-confined glow is
+  // faintest at 5%, which is exactly when it matters most), leaves the focused
+  // ring's own glow unambiguous, and stays readable on a stale cell, where the
+  // dimmed arc means "this number is not to be trusted" while the tool really is
+  // working. It is read from the cell's rows whatever the card draws of them: whether
+  // a tool is working is not the card's list, so hiding that list is not an off switch
+  // for this. An item that genuinely has no session rows never breathes.
+  const running = runningSessionSummary(cell.sessions).count;
+  if (running > 0) node.dataset.running = 'yes';
   const color = providerColor(cell.provider);
   const value = el('span', 'edge-dock-value');
   if (cell.credits && cell.credits.amount !== null && cell.credits.amount !== undefined) {
@@ -460,7 +499,11 @@ function providerCellNode(cell) {
   }
   value.dataset.severity = displaySeverity(cell.remainingPercent);
   node.append(ringNode(cell.remainingPercent, color, markNode(cell.provider)), value);
-  node.setAttribute('aria-label', `${providerLabel(cell.provider)} ${value.textContent}`);
+  // The halo is decorative and carries no text, so the state it announces is
+  // spoken here instead, from the same reading it is drawn from.
+  const spoken = [providerLabel(cell.provider), value.textContent];
+  if (running > 0) spoken.push(t('edgeDock.runningCount', { count: running }));
+  node.setAttribute('aria-label', spoken.join(' '));
   return node;
 }
 
@@ -609,10 +652,38 @@ function statCellNode(cell) {
 }
 
 let railNode = null;
+// `null` until a payload has said: the entrance is keyed to a reveal this page has
+// not seen, so a page that loads with the rail already up shows it instead of
+// replaying the slide.
+let railReveal = null;
+
+// The motion itself is CSS (`edge-dock-rail-in`); this only decides when it
+// plays. The root wraps both the silhouette and the cells, so sliding it moves
+// the rail as one unit, and the window — which is the screen edge — is what
+// clips the part that starts off-screen.
+function playRailReveal() {
+  if (document.documentElement.classList.contains('edge-dock-reduced-motion')) return;
+  // The class is dropped on animationend; clearing it first and flushing the
+  // style is what makes a second reveal replay the animation rather than re-add
+  // a class whose animation has already finished.
+  root.classList.remove('is-revealing');
+  void root.offsetWidth;
+  root.classList.add('is-revealing');
+}
+
+root.addEventListener('animationend', (event) => {
+  if (event.animationName === 'edge-dock-rail-in') root.classList.remove('is-revealing');
+});
 
 function renderRail(payload) {
   root.dataset.side = payload.side;
   root.classList.toggle('is-always', payload.always === true);
+  // Stats arrive every few seconds and each one re-renders this surface, so the
+  // slide belongs to the reveal rather than to every payload that follows it: the
+  // count moves only on a real reveal, and this plays when it has moved on.
+  const reveal = payload.reveal;
+  if (railReveal !== null && reveal !== railReveal) playRailReveal();
+  railReveal = reveal;
   if (!railNode) {
     railNode = el('div', 'edge-dock-rail');
     contentLayer.append(railNode);
@@ -887,7 +958,9 @@ function providerCard(cell) {
   }
   card.append(accounts);
 
-  const sessions = sessionsNode(cell.sessions);
+  // The rows are the cell's activity reading as well as this card's list, so the
+  // switch decides what is drawn here rather than whether the cell has them.
+  const sessions = cell.showSessions === false ? null : sessionsNode(cell.sessions);
   if (sessions) card.append(sessions);
 
   if (cell.usage) {
@@ -921,11 +994,9 @@ function appendLiveRate(card, head, cell) {
   figure.title = t('edgeDock.rate.switch');
   const unit = el('span', 'edge-dock-rate-unit', t(burnMode ? 'edgeDock.rate.burnUnit' : 'edgeDock.rate.speedUnit'));
   figure.append(el('strong', '', hasSample ? formatRate(cell.rate) : '—'), unit, el('span', 'edge-dock-rate-swap', '⇄'));
-  // pointerdown, not click: the card is rebuilt whenever the rate moves, and a
-  // rebuild between press and release silently swallows the click.
-  figure.addEventListener('pointerdown', (event) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
+  // Press-activated, not click: the card is rebuilt whenever the rate moves, and
+  // a rebuild between press and release silently swallows the click.
+  activateOnPress(figure, () => {
     unit.textContent = t(burnMode ? 'edgeDock.rate.speedUnit' : 'edgeDock.rate.burnUnit');
     bridge.toggleRateMode();
   });
@@ -959,39 +1030,73 @@ function statCard(cell) {
   const total = el('div', 'edge-dock-stat-headline');
   total.append(el('strong', '', formatTokens(cell.totalTokens)), el('span', '', formatCost(cell.costUsd)));
   card.append(total);
-  if (!cell.clients.length) {
+  if (!cell.clients.length && !(cell.models || []).length) {
     card.append(el('div', 'edge-dock-note', t('edgeDock.noUsagePeriod')));
     return card;
   }
-  // Tools read like the widget's Tools list: tokens and share of the period,
-  // in fixed columns, with a bar matching the limit meters above.
+  const breakdownMode = state.breakdownMode === 'models' ? 'models' : 'tools';
+  card.dataset.breakdownMode = breakdownMode;
+  head.classList.add('is-breakdown');
+  const switcher = el('div', 'edge-dock-breakdown-switch');
+  switcher.setAttribute('role', 'group');
+  switcher.setAttribute('aria-label', `${t('home.tools')} / ${t('home.models')}`);
+  for (const mode of ['tools', 'models']) {
+    const button = el('button', 'edge-dock-breakdown-option', t(`home.${mode}`));
+    button.type = 'button';
+    button.classList.toggle('is-active', breakdownMode === mode);
+    button.setAttribute('aria-pressed', String(breakdownMode === mode));
+    // Press-activated for the same reason as the live-rate figure: a repaint
+    // between press and release replaces the button and would swallow the click.
+    activateOnPress(button, () => {
+      if (state.breakdownMode === mode) return;
+      state.breakdownMode = mode;
+      renderBubble(state.payload);
+    });
+    switcher.append(button);
+  }
+  head.append(switcher);
+
+  // Both breakdowns keep the widget's list rhythm: mark, name, tokens and share,
+  // followed by the same meter. The model view borrows the main renderer's vendor
+  // and fallback colours so one model never changes identity between surfaces.
+  const rows = breakdownMode === 'models'
+    ? (cell.models || []).map((model) => ({
+      // Match the main widget: an unknown model uses the Token Monitor mark.
+      // Passing null to markNode would instead select its generic dot fallback.
+      id: modelVendorFor(model.model) || 'token-monitor',
+      name: model.model === UNATTRIBUTED_KEY ? t('dashboard.tooltip.unclassified') : model.model,
+      tokens: model.tokens,
+      color: readableColor(model.unattributed ? clientColors.default : modelColor(model.model))
+    }))
+    : cell.clients.map((client) => ({
+      id: client.unattributed ? 'token-monitor' : client.client,
+      name: client.client === UNATTRIBUTED_KEY ? t('dashboard.tooltip.unclassified') : clientLabel(client.client),
+      tokens: client.tokens,
+      color: readableColor(clientColors[client.client] || clientColors.default)
+    }));
   const list = el('div', 'edge-dock-accounts edge-dock-clients');
-  const top = cell.clients[0].tokens || 1;
-  const sum = cell.totalTokens || cell.clients.reduce((value, client) => value + client.tokens, 0) || 1;
-  for (const client of cell.clients) {
-    const color = readableColor(clientColors[client.client] || clientColors.default);
+  const top = rows[0]?.tokens || 1;
+  const sum = cell.totalTokens || rows.reduce((value, row) => value + row.tokens, 0) || 1;
+  for (const entry of rows) {
     const row = el('div', 'edge-dock-client');
     // The same bar as the quota meters above it, built by the same helper.
     const meter = el('div', 'limit-meter');
-    meter.style.background = colorWithAlpha(color, 0.16);
+    meter.style.background = colorWithAlpha(entry.color, 0.16);
     const fill = el('div', 'limit-meter-fill');
-    fill.style.background = color;
+    fill.style.background = entry.color;
     fill.style.opacity = '0.95';
-    applyBarScale(fill, Math.max(0.02, client.tokens / top));
+    applyBarScale(fill, Math.max(0.02, entry.tokens / top));
     meter.append(fill);
     row.append(
-      markNode(client.client, color),
-      el('span', 'edge-dock-client-name', clientLabel(client.client)),
-      el('span', 'edge-dock-client-tokens', formatTokens(client.tokens)),
-      el('span', 'edge-dock-client-share', `${Math.round((client.tokens / sum) * 100)}%`),
+      markNode(entry.id, entry.color),
+      el('span', 'edge-dock-client-name', entry.name),
+      el('span', 'edge-dock-client-tokens', formatTokens(entry.tokens)),
+      el('span', 'edge-dock-client-share', `${Math.round((entry.tokens / sum) * 100)}%`),
       meter
     );
     list.append(row);
   }
   card.append(list);
-  if (cell.clientCount > cell.clients.length) {
-    card.append(el('div', 'edge-dock-note', t('edgeDock.moreClients', { count: cell.clientCount - cell.clients.length })));
-  }
   return card;
 }
 
@@ -1065,12 +1170,11 @@ function sessionsCard(cell, card, head) {
 // sized and shaped for exactly that card, so a new card never paints into a
 // window still at the previous card's size (which read as a flash).
 //
-// Both scroll containers, because which one scrolls depends on the card. A provider
-// card and the grouped Sessions card scroll `.edge-dock-accounts`; the ungrouped
-// Sessions card's list is `.edge-dock-session-list`, and that is the one which overflows
-// there, since running rows are never capped. A repaint rebuilds the card, so a
-// selector that missed the container actually in use reset that card's scroll on every
-// clock tick - yanking the reader back to the top while they were reading it.
+// Both scroll containers, because which one scrolls depends on the card. Provider,
+// grouped Sessions, and period-breakdown cards scroll `.edge-dock-accounts`; the
+// ungrouped Sessions card's list is `.edge-dock-session-list`. A repaint rebuilds the
+// card, so a selector that missed the container actually in use reset that card's
+// scroll on every clock tick - yanking the reader back to the top while they read it.
 const CARD_SCROLL_SELECTOR = '.edge-dock-accounts, .edge-dock-session-list';
 
 const stagingLayer = document.createElement('div');
@@ -1079,11 +1183,27 @@ if (surface === 'bubble') root.append(stagingLayer);
 
 function commitCard(card, cellId) {
   const previous = contentLayer.querySelector('.edge-dock-card');
-  const sameCard = previous?.dataset.cellId === cellId;
+  const sameCard = previous?.dataset.cellId === cellId
+    && previous?.dataset.breakdownMode === card.dataset.breakdownMode;
   const scrollTop = sameCard ? previous.querySelector(CARD_SCROLL_SELECTOR)?.scrollTop || 0 : 0;
   contentLayer.replaceChildren(card);
   const list = card.querySelector(CARD_SCROLL_SELECTOR);
   if (list) list.scrollTop = scrollTop;
+}
+
+// The period card is a summary even when the period contains dozens of tools or
+// models. Keep its natural height at six rows, but leave every row in the list so
+// the existing overflow container can reveal the rest. Measuring the rendered
+// rows avoids baking the current font metrics and meter spacing into a second
+// magic pixel height.
+function clampBreakdownList(card) {
+  const list = card.querySelector('.edge-dock-clients');
+  const rows = Array.from(list?.children || []);
+  if (rows.length <= BREAKDOWN_VISIBLE_ROWS) return;
+  const first = rows[0].getBoundingClientRect();
+  const last = rows[BREAKDOWN_VISIBLE_ROWS - 1].getBoundingClientRect();
+  const height = Math.ceil(last.bottom - first.top);
+  if (height > 0) list.style.maxHeight = `${height}px`;
 }
 
 function renderBubble(payload) {
@@ -1097,6 +1217,7 @@ function renderBubble(payload) {
   card.dataset.cellId = cell.id;
   if (payload.maxCardHeight) card.style.maxHeight = `${payload.maxCardHeight}px`;
   stagingLayer.replaceChildren(card);
+  clampBreakdownList(card);
   const height = Math.ceil(card.getBoundingClientRect().height);
   if (payload.placed?.cellId === cell.id && payload.placed.height === height) {
     commitCard(card, cell.id);
@@ -1137,9 +1258,17 @@ bridge.onRender(render);
 // tool marks it was pushed with, and a card opened later would disagree with the
 // cell that opened it. Every surface re-derives from the payload it already holds,
 // so this costs no IPC and asks the main process for nothing.
+// A cell whose reading moves with the sessions clock. Asked by "does it carry
+// rows" rather than by metric: the sessions item is not the only cell that reads
+// them any more - a provider cell breathes its mark while that tool is working,
+// and that has to stop on the same clock the count does.
+function cellReadsSessions(cell) {
+  return Array.isArray(cell?.sessions) && cell.sessions.length > 0;
+}
+
 function surfacesShowingSessions() {
-  if (surface === 'rail') return (state.payload?.cells || []).some((cell) => cell.metric === presentation.SESSIONS_METRIC);
-  if (surface === 'bubble') return state.payload?.cell?.metric === presentation.SESSIONS_METRIC;
+  if (surface === 'rail') return (state.payload?.cells || []).some(cellReadsSessions);
+  if (surface === 'bubble') return cellReadsSessions(state.payload?.cell);
   return false;
 }
 
@@ -1165,7 +1294,7 @@ function sessionsExpiryDelayMs() {
   let soonest = 0;
   const now = Date.now();
   for (const cell of cells) {
-    if (cell?.metric !== presentation.SESSIONS_METRIC) continue;
+    if (!cellReadsSessions(cell)) continue;
     // Asked of the rows rather than read off the cell. `runningExpiresAt` describes the
     // payload as it was projected, and a repaint does not re-project: once the soonest
     // expiry passes, that field is in the past for good, so a later row's expiry would
