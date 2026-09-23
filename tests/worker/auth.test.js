@@ -1,7 +1,6 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const test = require('node:test');
@@ -32,13 +31,6 @@ async function hubDO(env = { TOKEN_MONITOR_SECRET: 'shh' }) {
 function request(url, headers = {}, init = {}) {
   return new Request(url, { headers, ...init });
 }
-
-test('Worker secret compare pads lengths and does not use ===', () => {
-  const source = fs.readFileSync(path.join(__dirname, '../../worker/src/index.js'), 'utf8');
-  assert.match(source, /left\.byteLength === right\.byteLength \? 0 : 1/);
-  assert.match(source, /paddedLeft\[i\] \^ paddedRight\[i\]/);
-  assert.doesNotMatch(source, /return requestSecret\(request\) === expectedSecret/);
-});
 
 test('Worker health stays open; data routes refuse a missing secret', async () => {
   const hub = await hubDO();

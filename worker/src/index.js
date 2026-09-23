@@ -55,24 +55,22 @@ function requestSecret(request) {
   } catch (_) { return ''; }
 }
 
-// Workers have no node:crypto.timingSafeEqual. Pad both sides to the same
-// length so a shorter candidate is still a full compare, then require the
-// original lengths to match.
-function timingSafeEqualText(actual, expected) {
+// Compare SHA-256 digests rather than the raw strings, so the compare always
+// runs over 32 bytes and never leaks the secret's length. Web Crypto's standard
+// surface has no timing-safe compare (Cloudflare's crypto.subtle.timingSafeEqual
+// is a non-standard extension the Node test runner lacks), hence the XOR loop.
+async function timingSafeEqualText(actual, expected) {
   const encoder = new TextEncoder();
-  const left = encoder.encode(String(actual ?? ''));
-  const right = encoder.encode(String(expected ?? ''));
-  const max = Math.max(left.byteLength, right.byteLength, 1);
-  const paddedLeft = new Uint8Array(max);
-  const paddedRight = new Uint8Array(max);
-  paddedLeft.set(left);
-  paddedRight.set(right);
-  let mismatch = left.byteLength === right.byteLength ? 0 : 1;
-  for (let i = 0; i < max; i += 1) mismatch |= paddedLeft[i] ^ paddedRight[i];
+  const digest = async (value) => new Uint8Array(
+    await crypto.subtle.digest('SHA-256', encoder.encode(String(value ?? '')))
+  );
+  const [left, right] = await Promise.all([digest(actual), digest(expected)]);
+  let mismatch = 0;
+  for (let i = 0; i < left.length; i += 1) mismatch |= left[i] ^ right[i];
   return mismatch === 0;
 }
 
-function isAuthorized(request, expectedSecret) {
+async function isAuthorized(request, expectedSecret) {
   if (!expectedSecret) return true;
   return timingSafeEqualText(requestSecret(request), expectedSecret);
 }
@@ -267,7 +265,7 @@ export class HubDO {
     if (!this.secret) {
       return jsonResponse(503, { error: 'secret_required', message: 'TOKEN_MONITOR_SECRET must be set on the worker; unauthenticated access is refused.' });
     }
-    if (!isAuthorized(request, this.secret)) return jsonResponse(401, { error: 'unauthorized' });
+    if (!(await isAuthorized(request, this.secret))) return jsonResponse(401, { error: 'unauthorized' });
 
     if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/api/stats') {
       return jsonResponse(200, await this.statsWithSubscriptionVersion(), {}, request);

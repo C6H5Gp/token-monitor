@@ -74,18 +74,12 @@ function requestSecret(req) {
   return String(req.headers['x-token-monitor-secret'] || '').trim();
 }
 
-// timingSafeEqual throws on length mismatch. Pad both sides to the same
-// length so a shorter candidate is still a full compare, then require the
-// original lengths to match.
+// Compare SHA-256 digests rather than the raw strings: timingSafeEqual needs
+// equal-length inputs, and hashing both sides first gives it that without
+// leaking the secret's length through a padded compare.
 function timingSafeEqualText(actual, expected) {
-  const left = Buffer.from(String(actual ?? ''), 'utf8');
-  const right = Buffer.from(String(expected ?? ''), 'utf8');
-  const max = Math.max(left.length, right.length, 1);
-  const paddedLeft = Buffer.alloc(max);
-  const paddedRight = Buffer.alloc(max);
-  left.copy(paddedLeft);
-  right.copy(paddedRight);
-  return crypto.timingSafeEqual(paddedLeft, paddedRight) && left.length === right.length;
+  const digest = (value) => crypto.createHash('sha256').update(String(value ?? ''), 'utf8').digest();
+  return crypto.timingSafeEqual(digest(actual), digest(expected));
 }
 
 function isAuthorized(req, expectedSecret) {

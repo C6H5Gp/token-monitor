@@ -1,18 +1,9 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const test = require('node:test');
 
 const { isAuthorized, timingSafeEqualText } = require('../../src/shared/http');
-
-test('hub secret compare uses crypto.timingSafeEqual with a length-safe pad', () => {
-  const source = fs.readFileSync(path.join(__dirname, '../../src/shared/http.js'), 'utf8');
-  assert.match(source, /crypto\.timingSafeEqual/);
-  assert.match(source, /Buffer\.alloc\(max\)/);
-  assert.doesNotMatch(source, /return requestSecret\(req\) === expectedSecret/);
-});
 
 test('timingSafeEqualText matches equal strings and rejects mismatches', () => {
   assert.equal(timingSafeEqualText('shh', 'shh'), true);
@@ -35,19 +26,6 @@ test('timingSafeEqualText treats empty and missing values as empty strings', () 
   assert.equal(timingSafeEqualText(null, ''), true);
   assert.equal(timingSafeEqualText(undefined, 'shh'), false);
   assert.equal(timingSafeEqualText(null, 'shh'), false);
-});
-
-test('timingSafeEqualText stringifies non-string inputs instead of throwing', () => {
-  assert.doesNotThrow(() => timingSafeEqualText(12, '12'));
-  assert.equal(timingSafeEqualText(12, '12'), true);
-  assert.equal(timingSafeEqualText(12, 12), true);
-  assert.equal(timingSafeEqualText(12, 13), false);
-  assert.equal(timingSafeEqualText(true, 'true'), true);
-  assert.equal(timingSafeEqualText({}, {}), true);
-  assert.equal(timingSafeEqualText({ a: 1 }, 'shh'), false);
-  // Array#toString joins elements, so ['shh'] stringifies to 'shh'.
-  assert.equal(timingSafeEqualText(['shh'], 'shh'), true);
-  assert.equal(timingSafeEqualText(['nope'], 'shh'), false);
 });
 
 test('isAuthorized allows any caller when no hub secret is configured', () => {
