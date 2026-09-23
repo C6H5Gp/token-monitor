@@ -12,11 +12,12 @@
     node ? require('../../../shared/limitProviders') : root?.TokenMonitorLimitProviders,
     node ? require('./items') : root?.TokenMonitorEdgeDockItems,
     node ? require('../accountIdentity') : root?.TokenMonitorAccountIdentity,
-    node ? require('../../../shared/sessionLive') : root?.TokenMonitorSessionLive
+    node ? require('../../../shared/sessionLive') : root?.TokenMonitorSessionLive,
+    node ? require('../usageAttributionRows') : root?.TokenMonitorUsageAttributionRows
   );
   if (node) module.exports = api;
   if (root) root.TokenMonitorEdgeDockPresentation = api;
-})(typeof window !== 'undefined' ? window : null, function createEdgeDockPresentation(trayText, balanceDisplay, limitProviders, dockItems, accountIdentity, sessionLive) {
+})(typeof window !== 'undefined' ? window : null, function createEdgeDockPresentation(trayText, balanceDisplay, limitProviders, dockItems, accountIdentity, sessionLive, usageAttributionRows) {
   // Every account is listed; the card scrolls when they outgrow the screen.
   const MAX_BUBBLE_ACCOUNTS = 50;
 
@@ -95,14 +96,8 @@
   // Which limits provider a tracked client's tokens belong to. Asked of the
   // shared catalog's own client→provider mapping rather than copied, so a client
   // folded under a differently named provider (droid → factory) stays aligned.
-  const providerForClientCache = new Map();
   function providerForClient(client) {
-    if (providerForClientCache.has(client)) return providerForClientCache.get(client);
-    const [provider = null] = limitProviders?.limitProvidersForDetectedClients?.({
-      clients: { [client]: { source: { state: 'detected' } } }
-    }) || [];
-    providerForClientCache.set(client, provider);
-    return provider;
+    return limitProviders?.limitProviderForClient?.(client) ?? null;
   }
 
   function periodUsageFor(period, provider) {
@@ -361,7 +356,13 @@
         currency: balanceDisplay.creditsCurrency(headline.record, headlineWindow)
       }
       : null;
-    const sessions = options.showSessions === false ? [] : recentSessionsFor(options.stats, id);
+    // The recent rows are two readings at once: the card lists them, and the rail's
+    // running mark and its expiry clock are derived from them. So `showSessions` is a
+    // choice about what the card draws and rides the cell as one, rather than being
+    // applied here - emptying the rows here turned a switch labelled "Show recent
+    // sessions in card" into an off switch for the rail's activity mark, which is a
+    // reading the card was never asked about.
+    const sessions = recentSessionsFor(options.stats, id);
     return {
       id,
       kind: 'provider',
@@ -397,19 +398,44 @@
         syncActive: options.syncActive === true
       },
       sessions,
+      // What the card draws of those rows. The rail's mark reads them whatever this
+      // says, because whether a tool is working is not the card's question.
+      showSessions: options.showSessions !== false,
       forecast: id === 'codex' ? options.codexResetForecast || null : null
     };
   }
 
   function clientBreakdown(period, metric) {
-    return Object.entries(period?.clients || {})
-      .map(([client, tokens]) => ({
-        client: normalizedId(client),
-        tokens: finite(tokens) || 0,
-        costUsd: finite(period?.clientCosts?.[client]) || 0
+    return usageAttributionRows.attributionRows(period?.clients, period?.clientCosts, {
+      totalValue: period?.totalTokens,
+      totalCost: period?.costUsd
+    })
+      .map((entry) => ({
+        client: normalizedId(entry.key),
+        tokens: finite(entry.value) || 0,
+        costUsd: finite(entry.cost) || 0,
+        unattributed: entry.unattributed === true
       }))
       .filter((entry) => entry.client && (metric === 'cost' ? entry.costUsd > 0 : entry.tokens > 0))
       .sort((a, b) => (metric === 'cost' ? b.costUsd - a.costUsd : b.tokens - a.tokens));
+  }
+
+  function modelBreakdown(period) {
+    return usageAttributionRows.attributionRows(period?.models, period?.modelCosts, {
+      totalValue: period?.totalTokens,
+      totalCost: period?.costUsd
+    })
+      .map((entry) => ({
+        model: entry.key,
+        tokens: finite(entry.value) || 0,
+        costUsd: finite(entry.cost) || 0,
+        unattributed: entry.unattributed === true
+      }))
+      .filter((entry) => entry.tokens > 0)
+      .sort((a, b) => b.tokens - a.tokens
+        || b.costUsd - a.costUsd
+        || Number(a.unattributed) - Number(b.unattributed)
+        || a.model.localeCompare(b.model));
   }
 
   function statCell(stats, metric, options = {}) {
@@ -476,6 +502,7 @@
     const derived = dockItems.DERIVED_PERIODS.includes(metric);
     const period = derived ? options.derivedPeriods?.[metric] || null : stats?.periods?.[metric] || null;
     const clients = period ? clientBreakdown(period, 'tokens') : [];
+    const models = period ? modelBreakdown(period) : [];
     return {
       id: `stat:${metric}`,
       kind: 'stat',
@@ -484,8 +511,8 @@
       available: Boolean(period),
       totalTokens: period ? finite(period.totalTokens) || 0 : null,
       costUsd: period ? finite(period.costUsd) || 0 : null,
-      clients: clients.slice(0, 6),
-      clientCount: clients.length
+      clients,
+      models
     };
   }
 

@@ -30,11 +30,17 @@
 //   format*, limitFillPercent, …       the page's own number formatting
 //   tooltip                            { hasOpened(), markOpened(), release() },
 //                                      the host's render-hold bookkeeping
+//
+// The one exception to "everything arrives through deps" is the provider
+// catalog: which client a provider's tokens are recorded under is the same
+// answer on every host, so it is imported rather than passed. A dep would only
+// give three hosts three chances to supply a different one.
 (function exposeLimitWindowsView(root, factory) {
-  const api = factory();
-  if (typeof module === 'object' && module.exports) module.exports = api;
+  const node = typeof module === 'object' && module.exports;
+  const api = factory(node ? require('../../shared/limitProviders') : root?.TokenMonitorLimitProviders);
+  if (node) module.exports = api;
   if (root) root.TokenMonitorLimitWindowsView = api;
-})(typeof window !== 'undefined' ? window : globalThis, function createLimitWindowsViewApi() {
+})(typeof window !== 'undefined' ? window : globalThis, function createLimitWindowsViewApi(limitProviders) {
   function createLimitWindowsView(deps) {
     const {
       t,
@@ -554,6 +560,19 @@
       : '';
   }
 
+  function clineCreditsNode(provider, credits, spend) {
+    const value = creditsBalanceValue(provider, credits);
+    if (!value) return null;
+    const monthSpend = optionalFiniteNumber(spend?.used);
+    const spendValue = monthSpend === null ? '' : formatBalanceSpendAmount(monthSpend, spend);
+    return limitNoteRowNode({
+      label: credits.label || 'Credits',
+      summary: value,
+      detailEntries: spendValue ? [['Month spent', spendValue]] : null,
+      ariaParts: [value, ...(spendValue ? [`Month spent ${spendValue}`] : [])]
+    });
+  }
+
   function mimoTokenPlanWindowFromBalance(balance) {
     if (!balance) return null;
     if (balance.planStatus === 'expired') return null;
@@ -1020,6 +1039,30 @@
       ].filter(Boolean);
       if (nodes.length % 2 === 1) nodes.at(-1).classList.add('limit-window-wide');
       windows.append(...nodes);
+    } else if (provider.provider === 'devin') {
+      const daily = windowForKind(provider, 'daily');
+      const weekly = windowForKind(provider, 'weekly');
+      const balanceWindow = (provider.windows || []).find(isCreditsWindow) || null;
+      const quotaNodes = [
+        daily && limitWindowNode(providerWindowLabel(provider, daily), daily, color, 0.95),
+        weekly && limitWindowNode(providerWindowLabel(provider, weekly), weekly, color, 0.68)
+      ].filter(Boolean);
+      if (quotaNodes.length === 1) quotaNodes[0].classList.add('limit-window-wide');
+      windows.append(...quotaNodes);
+      if (balanceWindow) {
+        const amount = creditsAmount(provider, balanceWindow);
+        if (amount !== null) {
+          const balanceNode = limitWindowNode(
+            providerWindowLabel(provider, balanceWindow, 'Extra usage balance'),
+            { ...balanceWindow, showMeter: false },
+            color,
+            0.68,
+            formatMoney(amount, balanceWindow.currency || provider.balance?.currency)
+          );
+          balanceNode.classList.add('limit-window-wide', 'limit-window-no-reset');
+          windows.append(balanceNode);
+        }
+      }
     } else if (provider.provider === 'kiro') {
       // Kiro exposes monthly credits (plus an optional bonus pool), both billing
       // windows. Render them full-width like Copilot's quota windows.
@@ -1200,6 +1243,33 @@
       }
       const balanceNode = claudeBalanceNode(provider);
       if (balanceNode) windows.append(balanceNode);
+    } else if (provider.provider === 'cline') {
+      // ClinePass measures three quota windows, and the account's credit arrives as
+      // a fourth "billing" window — told apart by its metric rather than by its
+      // kind, and rendered the way WorkBuddy's and Trae's balance is. The default
+      // branch below renders session and weekly only, which would silently drop a
+      // third of the subscription.
+      const clineSession = windowForKind(provider, 'session');
+      const clineWeekly = windowForKind(provider, 'weekly');
+      const clineBilling = windowsForKind(provider, 'billing');
+      const clineMonthly = clineBilling.find((window) => !isCreditsWindow(window) && window.metric !== 'spend') || null;
+      const clineCredits = clineBilling.find((window) => isCreditsWindow(window)) || null;
+      const clineSpend = clineBilling.find((window) => window.metric === 'spend') || null;
+      if (clineSession) {
+        windows.append(limitWindowNode(providerWindowLabel(provider, clineSession), clineSession, color, 0.95));
+      }
+      if (clineWeekly) {
+        windows.append(limitWindowNode(providerWindowLabel(provider, clineWeekly), clineWeekly, color, 0.68));
+      }
+      if (clineMonthly) {
+        const node = limitWindowNode(providerWindowLabel(provider, clineMonthly), clineMonthly, color, 0.5);
+        node.classList.add('limit-window-wide');
+        windows.append(node);
+      }
+      if (clineCredits) {
+        const node = clineCreditsNode(provider, clineCredits, clineSpend);
+        if (node) windows.append(node);
+      }
     } else {
       // Default: render only the windows the provider actually has. Providers
       // that only expose a single window shouldn't leave a half-empty bar next to
@@ -1857,13 +1927,22 @@
     return accountIdentity.sameAccount(account, provider);
   }
 
-  // Usage cost is keyed by client, and every provider whose id names a tracked
-  // client can be compared against it. Providers with no same-named client
-  // (openrouter, deepseek, thirdparty, zai…) simply have no entry, which is the
-  // correct answer: their spend is either pay-as-you-go or spread across
+  // Usage cost is keyed by client, so the comparison is the sum of what this
+  // provider's clients cost this month — resolved through the catalog, because
+  // a provider is not always named after the client that produces its tokens
+  // and reading the provider id straight out of a client-keyed map compares
+  // Factory against nothing while Droid's tokens sit one key away. A provider
+  // with no client at all (openrouter, thirdparty…) sums to nothing, which is
+  // the correct answer: its spend is either pay-as-you-go or spread across
   // clients with no way to attribute it.
   function subscriptionUsageCostUsd(providerId) {
-    const cost = Number(monthClientCosts()?.[providerId] || 0);
+    const provider = String(providerId || '').trim().toLowerCase();
+    if (!provider) return null;
+    let cost = 0;
+    for (const [client, value] of Object.entries(monthClientCosts() || {})) {
+      if (limitProviders.limitProviderForClient(client) !== provider) continue;
+      cost += Number(value) || 0;
+    }
     return cost > 0 ? cost : null;
   }
 
