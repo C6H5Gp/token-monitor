@@ -7719,6 +7719,24 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, Number(value)));
 }
 
+function initFooterActionDisclosure() {
+  const actions = els.utilityActions?.closest('.footer-update-actions');
+  if (!actions) return;
+  const reveal = () => actions.classList.add('is-disclosed');
+  const hide = () => actions.classList.remove('is-disclosed');
+  els.utilityActions.addEventListener('pointerenter', reveal);
+  actions.addEventListener('pointerleave', () => {
+    if (!actions.querySelector(':focus-visible')) hide();
+  });
+  actions.addEventListener('focusin', (event) => {
+    if (event.target.matches(':focus-visible') && els.utilityActions.contains(event.target)) reveal();
+  });
+  actions.addEventListener('focusout', (event) => {
+    if (!actions.contains(event.relatedTarget) && !actions.matches(':hover')) hide();
+  });
+  window.addEventListener('blur', () => hide());
+}
+
 function applyControlLayout(swapSettingsAndRefresh) {
   const footerSlot = document.getElementById('footerActionSlot');
   if (!footerSlot || !els.utilityActions) return;
@@ -12925,6 +12943,7 @@ els.pinButton.addEventListener('click', (event) => {
   if (event.detail > 0) els.pinButton.blur();
   saveSettings({ windowBehavior: nextWindowBehavior(currentWindowBehavior()) });
 });
+initFooterActionDisclosure();
 els.settingsButton.addEventListener('click', (event) => {
   if (state.viewSwitcherOpen) setViewSwitcherOpen(false);
   els.settingsPanel.classList.toggle('hidden');

@@ -68,6 +68,58 @@ test('applyControlLayout keeps both controls in the footer and swaps their roles
   assert.doesNotMatch(body, /titlebarSlot\.appendChild/);
 });
 
+test('footer disclosure stays open from utility actions to the update and releases outside the group', () => {
+  const app = readRendererFile('app.js');
+  const source = functionBody(app, 'initFooterActionDisclosure', 'applyControlLayout');
+  const handlers = new Map();
+  const classes = new Set();
+  const keyboardButton = { matches: () => true };
+  const pointerButton = { matches: () => false };
+  const updateButton = { matches: () => true };
+  let hovered = false;
+  let keyboardFocus = false;
+  const actions = {
+    classList: { add: (name) => classes.add(name), remove: (name) => classes.delete(name) },
+    addEventListener: (name, handler) => handlers.set(name, handler),
+    querySelector: () => keyboardFocus ? updateButton : null,
+    matches: () => hovered,
+    contains: (node) => [keyboardButton, pointerButton, updateButton].includes(node)
+  };
+  const utilityActions = {
+    closest: () => actions,
+    addEventListener: (name, handler) => handlers.set(`utility:${name}`, handler),
+    contains: (node) => [keyboardButton, pointerButton].includes(node)
+  };
+  const window = { addEventListener: (name, handler) => handlers.set(`window:${name}`, handler) };
+  require('node:vm').runInNewContext(`${source}\ninitFooterActionDisclosure();`, { els: { utilityActions }, window });
+  assert.match(app, /^initFooterActionDisclosure\(\);$/m, 'the renderer installs the production event handlers');
+
+  handlers.get('focusin')({ target: updateButton });
+  assert.equal(classes.has('is-disclosed'), false, 'approaching the resting update does not move it');
+  handlers.get('utility:pointerenter')();
+  handlers.get('focusout')({ relatedTarget: updateButton });
+  assert.equal(classes.has('is-disclosed'), true, 'moving from Refresh into the update keeps it reachable');
+  handlers.get('pointerleave')();
+  assert.equal(classes.has('is-disclosed'), false, 'leaving the shared boundary collapses pointer disclosure');
+
+  handlers.get('focusin')({ target: pointerButton });
+  assert.equal(classes.has('is-disclosed'), false, 'ordinary pointer focus does not pin disclosure');
+  handlers.get('focusin')({ target: keyboardButton });
+  keyboardFocus = true;
+  handlers.get('pointerleave')();
+  assert.equal(classes.has('is-disclosed'), true, 'keyboard focus holds disclosure even after the pointer leaves');
+  keyboardFocus = false;
+  hovered = true;
+  handlers.get('focusout')({ relatedTarget: null });
+  assert.equal(classes.has('is-disclosed'), true, 'pointer hover holds disclosure when keyboard focus leaves');
+  hovered = false;
+  handlers.get('focusout')({ relatedTarget: null });
+  assert.equal(classes.has('is-disclosed'), false, 'leaving both keyboard and pointer boundaries releases disclosure');
+  handlers.get('utility:pointerenter')();
+  handlers.get('window:blur')();
+  assert.equal(classes.has('is-disclosed'), false, 'switching away from the window clears pointer disclosure');
+});
+
 test('window-actions and tabs fade out after a short leave grace delay, in instantly', () => {
   const css = readRendererFile('styles.css');
 
