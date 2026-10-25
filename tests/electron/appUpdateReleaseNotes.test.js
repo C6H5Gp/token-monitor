@@ -64,6 +64,8 @@ test('footer update pill moves left of the disclosed action while the primary st
   assert.match(css, /\.footer-update-actions\.is-disclosed,[\s\S]*?--footer-disclosure-width: 40px;/);
   assert.match(css, /\.footer-update-actions:has\(\.utility-actions:not\(\.is-swapped\) \.refresh-button:is\(\.is-refreshing, \.is-refreshed, \.is-refresh-error\)\)/, 'refresh feedback reserves the same space without pointer hover');
   assert.match(css, /\.update-pill \{[\s\S]*?margin-right: var\(--footer-disclosure-width, 0px\);/);
+  assert.match(css, /visibility 0s var\(--footer-secondary-reveal-delay, 0ms\)/, 'secondary stays hidden from pointer hit-testing until the update clears its space');
+  assert.match(css, /--footer-secondary-reveal-delay: 180ms;/, 'the update finishes its 180ms move before the secondary accepts clicks');
   assert.match(css, /\.footer:has\(\.footer-update-actions \.update-pill:not\(\.hidden\)\) \.tool-detail-footer \{\s*min-width: 0;\s*flex-shrink: 1;/, 'detail options yield space at the minimum window width');
 
   assert.doesNotMatch(css, /\.shell\.settings-open \.footer \.update-pill/, 'opening Settings keeps the footer update visible and interactive alongside Refresh');

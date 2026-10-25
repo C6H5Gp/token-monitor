@@ -78,6 +78,14 @@ test('footer disclosure stays open from utility actions to the update and releas
   const updateButton = { matches: () => true };
   let hovered = false;
   let keyboardFocus = false;
+  let popoverOpen = false;
+  let positions = 0;
+  let anchorObserver;
+  class ResizeObserver {
+    constructor(callback) { this.callback = callback; anchorObserver = this; }
+    observe(target) { this.target = target; }
+    disconnect() { this.disconnected = true; }
+  }
   const actions = {
     classList: { add: (name) => classes.add(name), remove: (name) => classes.delete(name) },
     addEventListener: (name, handler) => handlers.set(name, handler),
@@ -91,7 +99,10 @@ test('footer disclosure stays open from utility actions to the update and releas
     contains: (node) => [keyboardButton, pointerButton].includes(node)
   };
   const window = { addEventListener: (name, handler) => handlers.set(`window:${name}`, handler) };
-  require('node:vm').runInNewContext(`${source}\ninitFooterActionDisclosure();`, { els: { utilityActions }, window });
+  require('node:vm').runInNewContext(`${source}\ninitFooterActionDisclosure();`, {
+    els: { utilityActions, appUpdatePopover: { matches: () => popoverOpen } },
+    window, ResizeObserver, positionAppUpdatePopover: () => { positions++; }
+  });
   assert.match(app, /^initFooterActionDisclosure\(\);$/m, 'the renderer installs the production event handlers');
 
   handlers.get('focusin')({ target: updateButton });
@@ -118,6 +129,15 @@ test('footer disclosure stays open from utility actions to the update and releas
   handlers.get('utility:pointerenter')();
   handlers.get('window:blur')();
   assert.equal(classes.has('is-disclosed'), false, 'switching away from the window clears pointer disclosure');
+  assert.equal(anchorObserver.target, actions, 'observe the moving footer group, not the fixed-size update button');
+  anchorObserver.callback();
+  assert.equal(positions, 0, 'a closed card does not need positioning');
+  popoverOpen = true;
+  anchorObserver.callback();
+  anchorObserver.callback();
+  assert.equal(positions, 2, 'an open card follows intermediate and final footer sizes');
+  handlers.get('window:unload')();
+  assert.equal(anchorObserver.disconnected, true, 'release the observer with the renderer');
 });
 
 test('window-actions and tabs fade out after a short leave grace delay, in instantly', () => {
@@ -205,6 +225,7 @@ test('Refresh discloses to the left of Settings on hover and keyboard focus', ()
   const reveal = cssRule(css, '.utility-actions:not(.is-swapped):hover .refresh-button,\n.utility-actions:not(.is-swapped):has(:focus-visible) .refresh-button,\n.shell.settings-open .utility-actions:not(.is-swapped) .refresh-button,\n.utility-actions .refresh-button:is(.is-refreshing, .is-refreshed, .is-refresh-error)');
 
   assert.equal(declaration(group, 'width'), '34px', 'settings remains anchored at its original width');
+  assert.doesNotMatch(css, /\.utility-actions::before\s*\{/, 'no invisible bridge may expand the hover trigger beyond the primary button');
   assert.match(declaration(refresh, 'right'), /100% \+ 6px/, 'refresh sits to the left of settings');
   assert.equal(declaration(refresh, 'opacity'), '0', 'refresh is hidden at rest');
   assert.equal(declaration(refresh, 'pointer-events'), 'none', 'hidden refresh cannot intercept clicks');

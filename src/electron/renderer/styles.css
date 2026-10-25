@@ -464,28 +464,28 @@ body.is-windows.floating-bubble-collapsed-right .floating-bubble-tab {
   width: 34px;
   isolation: isolate;
 }
-.utility-actions::before {
-  content: "";
-  position: absolute;
-  inset: 0 100% 0 auto;
-  width: 6px;
-}
+/* The shared footer container retains disclosure across gaps after entry.
+   Do not add an invisible hover bridge outside the primary button: entering
+   the gap directly must not disclose the secondary action. */
 .utility-actions .settings-icon-button {
+  visibility: visible;
   position: relative;
   z-index: 2;
   flex: 0 0 34px;
-  transition: opacity 160ms ease, transform 180ms cubic-bezier(0.22, 1, 0.36, 1), border-color 160ms ease, background 160ms ease;
+  transition: visibility 0s var(--footer-secondary-reveal-delay, 0ms), opacity 160ms ease var(--footer-secondary-reveal-delay, 0ms), transform 180ms cubic-bezier(0.22, 1, 0.36, 1) var(--footer-secondary-reveal-delay, 0ms), border-color 160ms ease, background 160ms ease;
 }
 .utility-actions .refresh-button {
+  visibility: hidden;
   position: absolute;
   right: calc(100% + 6px);
   z-index: 1;
   opacity: 0;
   pointer-events: none;
   transform: translateX(8px) scale(0.96);
-  transition: opacity 160ms ease, transform 180ms cubic-bezier(0.22, 1, 0.36, 1), border-color 160ms cubic-bezier(0.25, 1, 0.5, 1), background 160ms cubic-bezier(0.25, 1, 0.5, 1), color 160ms cubic-bezier(0.25, 1, 0.5, 1), box-shadow 160ms cubic-bezier(0.25, 1, 0.5, 1);
+  transition: visibility 0s var(--footer-secondary-reveal-delay, 0ms), opacity 160ms ease var(--footer-secondary-reveal-delay, 0ms), transform 180ms cubic-bezier(0.22, 1, 0.36, 1) var(--footer-secondary-reveal-delay, 0ms), border-color 160ms cubic-bezier(0.25, 1, 0.5, 1), background 160ms cubic-bezier(0.25, 1, 0.5, 1), color 160ms cubic-bezier(0.25, 1, 0.5, 1), box-shadow 160ms cubic-bezier(0.25, 1, 0.5, 1);
 }
 .utility-actions.is-swapped .settings-icon-button {
+  visibility: hidden;
   position: absolute;
   right: calc(100% + 6px);
   opacity: 0;
@@ -493,6 +493,7 @@ body.is-windows.floating-bubble-collapsed-right .floating-bubble-tab {
   transform: translateX(8px) scale(0.96);
 }
 .utility-actions.is-swapped .refresh-button {
+  visibility: visible;
   position: relative;
   right: auto;
   opacity: 1;
@@ -503,6 +504,7 @@ body.is-windows.floating-bubble-collapsed-right .floating-bubble-tab {
 .utility-actions:not(.is-swapped):has(:focus-visible) .refresh-button,
 .shell.settings-open .utility-actions:not(.is-swapped) .refresh-button,
 .utility-actions .refresh-button:is(.is-refreshing, .is-refreshed, .is-refresh-error) {
+  visibility: visible;
   opacity: 1;
   pointer-events: auto;
   transform: none;
@@ -510,6 +512,7 @@ body.is-windows.floating-bubble-collapsed-right .floating-bubble-tab {
 .utility-actions.is-swapped:hover .settings-icon-button,
 .utility-actions.is-swapped:has(:focus-visible) .settings-icon-button,
 .shell.settings-open .utility-actions.is-swapped .settings-icon-button {
+  visibility: visible;
   opacity: 1;
   pointer-events: auto;
   transform: none;
@@ -6172,21 +6175,30 @@ html.native-liquid-glass .view-switcher-menu-item { border-radius: 9px; }
    moving the update left; never hide it under Refresh (issue #1190). */
 .footer-update-actions {
   --footer-disclosure-width: 0px;
+  --footer-secondary-reveal-delay: 0ms;
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
   gap: 8px;
 }
 .footer-update-actions.is-disclosed,
+.footer-update-actions:has(.utility-actions:hover),
 .footer-update-actions:has(.utility-actions :focus-visible),
 .footer-update-actions:has(.utility-actions:not(.is-swapped) .refresh-button:is(.is-refreshing, .is-refreshed, .is-refresh-error)),
 .shell.settings-open .footer-update-actions {
   --footer-disclosure-width: 40px;
+  /* The secondary must not intercept the update's old hit area while it moves.
+     The resting 0ms delay disables it immediately when the controls collapse. */
+  --footer-secondary-reveal-delay: 180ms;
+}
+.footer-update-actions:has(.update-pill.hidden) .utility-actions {
+  --footer-secondary-reveal-delay: 0ms;
 }
 /* Pointer disclosure stays open across the update button and the gaps, so
    reaching the moved update does not collapse the controls under the pointer. */
 .footer-update-actions.is-disclosed .utility-actions:not(.is-swapped) .refresh-button,
 .footer-update-actions.is-disclosed .utility-actions.is-swapped .settings-icon-button {
+  visibility: visible;
   opacity: 1;
   pointer-events: auto;
   transform: none;
@@ -6199,6 +6211,13 @@ html.native-liquid-glass .view-switcher-menu-item { border-radius: 9px; }
 }
 @media (prefers-reduced-motion: reduce) {
   :root:not([data-reduce-motion="off"]) .update-pill { transition: none; }
+  :root:not([data-reduce-motion="off"]) .footer-update-actions .utility-actions {
+    --footer-secondary-reveal-delay: 0ms;
+  }
+}
+:root[data-reduce-motion="on"] .update-pill { transition: none; }
+:root[data-reduce-motion="on"] .footer-update-actions .utility-actions {
+  --footer-secondary-reveal-delay: 0ms;
 }
 .update-pill-action {
   position: relative;

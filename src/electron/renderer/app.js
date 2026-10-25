@@ -7722,6 +7722,14 @@ function clamp(value, min, max) {
 function initFooterActionDisclosure() {
   const actions = els.utilityActions?.closest('.footer-update-actions');
   if (!actions) return;
+  // The footer group's width changes on every frame of the update's margin
+  // transition. Observe it so an open card follows both motion and instant
+  // reduced-motion changes without a permanent animation-frame loop.
+  const anchorObserver = new ResizeObserver(() => {
+    if (els.appUpdatePopover.matches(':popover-open')) positionAppUpdatePopover();
+  });
+  anchorObserver.observe(actions);
+  window.addEventListener('unload', () => anchorObserver.disconnect(), { once: true });
   const reveal = () => actions.classList.add('is-disclosed');
   const hide = () => actions.classList.remove('is-disclosed');
   els.utilityActions.addEventListener('pointerenter', reveal);
