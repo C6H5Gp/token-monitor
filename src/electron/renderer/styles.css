@@ -6176,10 +6176,19 @@ html.native-liquid-glass .view-switcher-menu-item { border-radius: 9px; }
 .footer-update-actions {
   --footer-disclosure-width: 0px;
   --footer-secondary-reveal-delay: 0ms;
+  position: relative;
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
   gap: 8px;
+}
+/* Without an update, the group is only as wide as the primary button.
+   Bridge its gap only after disclosure so direct gap entry stays inert. */
+.footer-update-actions.is-disclosed:has(.update-pill.hidden)::before {
+  content: "";
+  position: absolute;
+  inset: 0 100% 0 auto;
+  width: 6px;
 }
 .footer-update-actions.is-disclosed,
 .footer-update-actions:has(.utility-actions:hover),

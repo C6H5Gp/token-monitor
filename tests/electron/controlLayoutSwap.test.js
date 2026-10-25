@@ -226,6 +226,9 @@ test('Refresh discloses to the left of Settings on hover and keyboard focus', ()
 
   assert.equal(declaration(group, 'width'), '34px', 'settings remains anchored at its original width');
   assert.doesNotMatch(css, /\.utility-actions::before\s*\{/, 'no invisible bridge may expand the hover trigger beyond the primary button');
+  const bridge = cssRule(css, '.footer-update-actions.is-disclosed:has(.update-pill.hidden)::before');
+  assert.equal(declaration(bridge, 'width'), '6px', 'only an already-disclosed group without an update bridges the gap');
+  assert.equal(declaration(bridge, 'inset'), '0 100% 0 auto', 'the bridge ends at the primary button without moving it');
   assert.match(declaration(refresh, 'right'), /100% \+ 6px/, 'refresh sits to the left of settings');
   assert.equal(declaration(refresh, 'opacity'), '0', 'refresh is hidden at rest');
   assert.equal(declaration(refresh, 'pointer-events'), 'none', 'hidden refresh cannot intercept clicks');
