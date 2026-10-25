@@ -464,6 +464,10 @@ body.is-windows.floating-bubble-collapsed-right .floating-bubble-tab {
   width: 34px;
   isolation: isolate;
 }
+.utility-actions > button:focus-visible {
+  outline: 2px solid rgba(var(--accent-rgb), 0.72);
+  outline-offset: 2px;
+}
 /* The shared footer container retains disclosure across gaps after entry.
    Clip the secondary action instead of hiding its visibility so Tab can reach
    it. The delayed clip transition also excludes it from pointer hit-testing. */
