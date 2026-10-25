@@ -232,6 +232,13 @@ test('Refresh discloses to the left of Settings on hover and keyboard focus', ()
   assert.match(declaration(refresh, 'right'), /100% \+ 6px/, 'refresh sits to the left of settings');
   assert.equal(declaration(refresh, 'opacity'), '0', 'refresh is hidden at rest');
   assert.equal(declaration(refresh, 'pointer-events'), 'none', 'hidden refresh cannot intercept clicks');
+  assert.equal(declaration(refresh, 'clip-path'), 'inset(50%)', 'clipping keeps the resting secondary outside pointer hit-testing');
+  assert.doesNotMatch(refresh, /visibility:\s*hidden/, 'the resting secondary must remain in the keyboard Tab order');
+  const swappedSecondary = cssRule(css, '.utility-actions.is-swapped .settings-icon-button');
+  assert.equal(declaration(swappedSecondary, 'clip-path'), 'inset(50%)');
+  assert.doesNotMatch(swappedSecondary, /visibility:\s*hidden/, 'swapped Settings must also remain in the keyboard Tab order');
+  const keyboard = cssRule(css, '.footer-update-actions:has(.utility-actions :focus-visible) .update-pill,\n.footer-update-actions:has(.utility-actions :focus-visible) .utility-actions > button');
+  assert.equal(declaration(keyboard, 'transition'), 'none', 'keyboard focus clears space and reveals controls immediately');
   assert.equal(declaration(reveal, 'opacity'), '1', 'hover/focus reveals refresh');
   assert.equal(declaration(reveal, 'pointer-events'), 'auto', 'revealed refresh is interactive');
   assert.match(css, /\.shell\.settings-open \.utility-actions:not\(\.is-swapped\) \.refresh-button/, 'opening Settings pins refresh open');
